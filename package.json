@@ -16,6 +16,6 @@
     "start": "node server2.js"
   },
   "keywords": [],
-  "author": "",
+  "author": "kage",
   "license": "ISC"
 }
