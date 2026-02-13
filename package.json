@@ -1,0 +1,21 @@
+{
+  "name": "snake-tetris-score",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "dependencies": {
+    "express": "^4.17.1",
+    "vexflow": "^3.0.9",
+    "ws": "^7.2.3"
+  },
+  "engines": {
+    "node": "25.x",
+    "npm": "11.x"
+  },
+  "scripts": {
+    "start": "node server2.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

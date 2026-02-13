@@ -1,0 +1,131 @@
+Snake-Tetris Score Protocol Syntax
+==================================
+
+Last verified from:
+- `server2.js`
+- `index.html` + `score-generator.js`
+- `snake.full.decoded.js` (decoded GWT build)
+- `server.js` (legacy)
+- `SNAKE.MESSAGES.txt` (legacy notes)
+
+Transport
+---------
+- WebSocket text frames only.
+- Messages are plain strings in the shape: `<type> <payload>`.
+- No JSON schema and no binary payloads in normal flow.
+- Type matching is case-sensitive.
+- `server2.js` routes using exact string checks and `startsWith(...)`.
+
+Endpoints
+---------
+- Score client: `index.html` opens `new WebSocket(location.origin.replace(/^http/, 'ws'))`.
+- Snake app: websocket host/port is compiled in the snake bundle.
+  - Active default in this build: `localhost:3000` (`LOCAL` index is selected).
+  - Alternate compiled target: `snaketetris.herokuapp.com:80`.
+
+Room Model (`server2.js`)
+-------------------------
+- Each snake host owns one room (`ID`).
+- Multiple score clients can join the same room.
+- Room IDs are incremental, in-memory only (reset on server restart).
+
+Message Types by Direction
+--------------------------
+1) Snake -> Server
+- `IAMSNAKE <roomIdHint>`
+  Sent on open. If room exists, snake rebinds; otherwise server creates a new room.
+- `<data packet>`
+  Any non-control snake message is relayed to all joined score clients in that room.
+
+2) Server -> Snake
+- `ACCEPTED <roomId>`
+  Assigned/confirmed room ID.
+- `CLIENTS <count>`
+  Current number of joined score clients.
+- `BUSY`
+  Legacy single-host response (still handled by snake client code).
+
+3) Score -> Server
+- `IAMSCORE`
+  Register as score client.
+- `JOIN <roomId>`
+  Join a room (also detaches from previous room).
+- `BACK`
+  Leave room.
+- `snake`
+  Pull request for live timing/path update from snake.
+- `<other payload>`
+  Forwarded to the room snake socket (no schema validation).
+
+4) Server -> Score
+- `IDS <id1,id2,...>`
+  Current room list.
+- Forwarded snake data packets:
+  `notem`, `eaten`, `dynam`, `rhyth`, `snake`, `tempo`.
+
+Data Packet Syntax (Snake -> Score)
+-----------------------------------
+1) `notem`
+- Format: `notem <f0> <f1> ... <f11>`
+- 12 note probability values (space separated).
+
+2) `eaten`
+- Format: `eaten <x> <y> <amount> <hueBin> <satBin> <value>`
+- Source: `Food.toString()` -> `x y amount toHSVString(color)`.
+- Exact fields:
+  - `x`: food X grid coordinate (int)
+  - `y`: food Y grid coordinate (int)
+  - `amount`: food effect code (int)
+  - `hueBin`: HSV hue / 30
+  - `satBin`: HSV saturation * 3
+  - `value`: HSV value/brightness
+- In-game effect from `amount`:
+  - `-1`, `0`, `+1` -> `snake.grow(amount)`
+  - `-2`, `+2` -> speed slider changes by `amount/2 * 3` (so +/-3 steps)
+
+3) `dynam`
+- Format: `dynam <d0> <d1> ...`
+- One value per snake segment.
+- Computed from food distances:
+  `10 - floor(sum(distances from segment to all foods) / 10)`.
+
+4) `rhyth`
+- Format: `rhyth <r0> <r1> ...`
+- Turn/run encoding derived from snake sprite direction changes.
+- Starts at `1`; straight segments increment current token.
+- Turn markers append one of: `101`, `201`, `301`, `401`.
+
+5) `snake`
+- Format: `snake <x0> <y0> <x1> <y1> ...`
+- Flat coordinate pairs, space separated.
+- Serialized in tail -> head order (head is the final pair).
+
+6) `tempo`
+- Format: `tempo <t>`
+- Sent when snake speed slider changes.
+- Score-side conversion:
+  `tempo = Number(t) * 0.25 + 0.25`.
+
+Pull/Push Behavior
+------------------
+- When snake receives `CLIENTS <n>` and has `lastEaten`, it pushes full state:
+  `notem`, `eaten`, `dynam`, `rhyth`, `snake`.
+- Score periodically sends `snake` to request refreshed motion-timed data.
+- Snake replies to that pull with:
+  `dynam`, `rhyth`, `snake` (not `notem` or `eaten`).
+
+Legacy Notes
+------------
+- `server.js` is older single-room protocol:
+  - snake login was `IAMSNAKE` (no room ID payload)
+  - server returned `ACCEPTED` or `BUSY`
+  - status text used `SNAKE-TETRIS ...`
+- `SNAKE.MESSAGES.txt` includes historical prefix `eatenSnake`.
+  Current code uses `eaten`.
+
+Protocol Caveats
+----------------
+- Server does no payload validation; it forwards raw text.
+- `snake` is both a command (score -> snake) and data type (snake -> score).
+  Direction/context disambiguates it.
+- Room state and IDs are not persisted.

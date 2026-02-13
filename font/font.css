@@ -1,0 +1,11 @@
+@font-face {
+  font-family: 'Petaluma';
+  src: url('Petaluma.eot');
+  src: url('Petaluma.eot?#iefix') format('embedded-opentype'),
+       url('Petaluma.svg#Petaluma') format('svg'),
+       url('Petaluma.ttf') format('truetype'),
+       url('Petaluma.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+}
+

@@ -1,0 +1,32 @@
+SnAKE sends
+    ->s'IAMSNAKE'
+    (s->'ACCEPTED '+ID)
+
+    ->s->c 'eatenSnake '+[]
+
+    (c->s-> 'snake')
+    ->s->c 'snake '+[]
+
+    ->s->c 'tempo '+tempo
+
+SERVER sends
+    //at SCORE DISCONNECTION
+    ->n 'CLIENTS '+length
+
+    //at SNAKE CONNECTION or DISCONNECTION
+    ->c 'IDS '+all IDs
+
+ScORE sends
+    ->s 'IAMSCORE'
+
+    ->s 'JOIN '+ID
+    (s->n clients)
+    (n->s->c) 'eatenSnake '+[]
+
+    ->s->n 'snake'
+    (n->s-> 'snake'+[])
+
+
+
+'eatenSnake 11 21 -1 0.41666666 1.0 0.8 snake 11 21 10 21 9 21 8 21 7 21 6 21 5 21 4 21 3 21 2 21 1 21';
+

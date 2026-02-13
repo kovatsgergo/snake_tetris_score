@@ -1,0 +1,248 @@
+<!doctype html>
+<!--https://www.tutorialsteacher.com/nodejs/serving-static-files-in-nodejs-->
+<html>
+
+<head>
+  <title>Score for Snake-Tetris</title>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+  <link rel="stylesheet" href="/style.css">
+  <!--link rel="preload" href="/font/Petaluma.eot" as="font">
+  <link rel="preload" href="/font/Petaluma.ttf" as="font">
+  <link rel="preload" href="/font/Petaluma.woff" as="font"-->
+  <script type="text/javascript" src="/node_modules/vexflow/releases/vexflow-debug.js"></script>
+  <script type="text/javascript" src="https://code.jquery.com/jquery-3.5.0.min.js"></script>
+</head>
+
+<body>
+  <div id="control">
+    <fieldset>
+      <legend>
+        Startup
+        <button id="start" onclick="startScore()" disabled="true">
+          START!
+        </button>
+      </legend>
+      <label for="rooms">Choose a room:</label>
+      <select id="rooms" style="width: 100px;">
+        <!--option value=-1>-1</option>
+        <option value=1>1</option>
+        <option value=2>2</option-->
+      </select>
+      <label for="instru">Choose an instrument:</label>
+      <select id="instru" style="width: 100px;">
+        <option>piano</option>
+        <option>guitar</option>
+        <option>trumpet</option>
+        <option>saxophone</option>
+        </select>
+    </fieldset>
+  </div>
+  <div id="control2" style="position: relative; display: none;" >
+    <fieldset>
+      <legend id="playLegend">
+        PLAY!
+        <button id="back" onclick="goBack()">
+          Quit from this room
+        </button>
+      </legend>
+      <h2>Play these pitches:</h2>
+      <h2 style="position: relative; left: 400px;">Play these rhythms:</h2>
+      <div id="score"></div>
+      <h2>Play these dynamics:</h2>
+      <div>
+        <canvas id="dynCanvas" width="900" height="50"></canvas>
+      </div>
+    </fieldset>
+  </div>
+  <fieldset>
+    <legend>Debug <button onclick="toggleDebug()">toggle</button></legend>
+    <div id="control3" style="display: none;">
+      <p id="net">net</p>
+      <p id="snake">snake</p>
+      <p id="eaten">eaten</p>
+      <p id="dynamics">dynamics</p>
+      <p id="notemap">neotemap</p>
+      <p id="tempo">tempo</p>
+      <p id="rhythm">rhythm</p>
+      <p id="debug">debug</p>
+    </div>
+  </fieldset>
+  <!-- ONLY HERE TO LOAD THE FONT IN TIME (doesn't load if display: none)-->
+  <div style="height: 0; font-family: Petaluma; visibility: collapse;">k</div>
+</body>
+
+<script src="/score-generator.js"></script>
+<script>
+  var HOST = location.origin.replace(/^http/, 'ws');
+
+  var ws = new WebSocket(HOST);
+  var el;
+  var room = -1;
+  var playText = 'PLAY!';
+  var youReIn = ' – You\'re in room nr. ';
+  var scoreElement = document.getElementById('score');
+
+  function init(){
+    $('#control2').slideUp();
+  }
+  
+  function startScore() {
+    room = document.getElementById('rooms').value;
+    //console.log("selection " + room);
+    ws.send('JOIN ' + room);
+    $('#control').slideUp();
+    $('#control2').slideDown();
+    //el = document.getElementById('back');
+    $('#playLegend').html(playText + youReIn + room
+      + document.getElementById('back').outerHTML);
+    //$('legend#playLegend').append($('#back'));
+    scoreElement.style.opacity = "1";
+    setRange(document.getElementById('instru').value);
+    //clearScore();
+    fakeStart();
+  }
+
+  $('#rooms').bind('click change', function () {
+    checkStart();
+  });
+
+  function checkStart() {
+    //console.log('room val ' + document.getElementById('').val());
+    room = Number($('#rooms').val());
+    (room > 0) ?
+      $('#start').prop('disabled', false) : $('#start').prop('disabled', true);
+  }
+
+  function goBack() {
+    ws.send('BACK');
+    //console.log("go BACK");
+    $('#control2').slideUp()
+    $('#control').slideDown();
+    clearScore();
+  }
+
+  function toggleDebug() {
+    $('#control3').slideToggle(300, function () { });
+  }
+
+  function scoreDisconnect() {
+    $('#playLegend').html(playText + youReIn + room + ' (disconnected)'
+      + document.getElementById('back').outerHTML);
+    //$('#playLegend').append($('#back'));
+    scoreElement.style.opacity = "0.3";
+  }
+
+  //https://www.jstips.co/en/javascript/working-with-websocket-timeout/
+  var timerID = 0;
+
+  function keepAlive() {
+    var timeout = 20000;
+    if (ws.readyState == webSocket.OPEN) {
+      ws.send('');
+    }
+    timerID = setTimeout(keepAlive, timeout);
+  }
+
+  function cancelKeepAlive() {
+    if (timerID) {
+      clearTimeout(timerID);
+    }
+  }
+
+  function handleIDS(message) {
+    var IDS = message.split(',');
+    el = document.getElementById('rooms');
+    while (el.options.length) {
+      el.remove(0);
+    }
+    IDS.forEach((element, index) => {
+      var opt = new Option(element, element);
+      el.options.add(opt);
+    });
+    if (room != -1 && !IDS.includes(room)) {
+      scoreDisconnect();
+      //console.log('room disappeared');
+    }
+    //console.log('el value ' + el.value);
+    if (!el.value) {
+      console.log("NOTVALUE")
+      el.selectedIndex = 0;
+    }
+    //console.log('el selected ' + el.selectedIndex);
+    checkStart();
+    //console.log('room ' + room);
+    //console.log('after IDS ' + el.value);
+  }
+
+  ws.onopen = function (event) {
+    ws.send('IAMSCORE');
+    el = document.getElementById('net').innerHTML 
+    = 'websocket connection opened ';
+  };
+
+  ws.onclose = function (event) {
+    document.getElementById('net').innerHTML =
+     'websocket connection closed ' + event.data;
+  }
+
+  ws.onerror = function (event) {
+    el = document.getElementById('net');
+    el.innerHTML = 'websocket connection error ' + event.data;
+  }
+
+  ws.onmessage = function (event) {
+    //console.log('GOT MESSAGE: ' + event.data);
+    if (event.data.startsWith('IDS ')) {
+      handleIDS(event.data.replace('IDS ', ''));
+    } else if (event.data.startsWith('eaten')) {
+      document.getElementById('eaten').innerHTML = event.data;
+      setEaten(event.data.replace('eaten ', ''));
+    } else if (event.data.startsWith('snake')) {
+      document.getElementById('snake').innerHTML =
+        event.data;
+      setSnake(event.data.replace('snake ', ''));
+      console.log(event.data);
+    } else if (event.data.startsWith('tempo')) {
+      document.getElementById('tempo').innerHTML =
+        event.data;
+      setTempo(event.data.replace('tempo ', ''));
+    } else if (event.data.startsWith('dynam')) {
+      document.getElementById('dynamics').innerHTML =
+        event.data;
+      setDynamics(event.data.replace('dynam ', ''));
+    } else if (event.data.startsWith('notem')) {
+      document.getElementById('notemap').innerHTML =
+        event.data;
+      setNotemap(event.data.replace('notem ', ''));
+    } else if (event.data.startsWith('rhyth')) {
+      document.getElementById('rhythm').innerHTML =
+        event.data;
+      setRhythm(event.data.replace('rhyth ', ''));
+    } else {
+      //WE DON'T KNOW WHAT IT IS BUT LET'S PUT IT ON THE DEBUG <p>
+      document.getElementById('debug').innerHTML = "unhandled " + event.data;
+    }
+  };
+  //const testMessage = 'eatenSnake 11 21 -1 0.41666666 1.0 0.8 snake 11 21 10 21 9 21 8 21 7 21 6 21 5 21 4 21 3 21 2 21 1 21';
+  //handleMessage(testMessage);
+  //el = document.getElementById('debug');
+  //el.innerHTML = 'from snake: ||' + testMessage + "||";
+  // const staff = document.getElementById('boo');
+  // while (staff.hasChildNodes()) {
+  //    staff.removeChild(staff.lastChild);
+  // }
+
+  function wsSend(message) {
+    //console.log('SENT MESSAGE ' + message);
+    ws.send(message);
+  }
+
+  function removeOptions(selectElement) {
+    var i, L = selectElement.options.length - 1;
+    for (i = L; i >= 0; i--) {
+      selectElement.remove(i);
+    }
+  }
+</script>
+
+</html>
