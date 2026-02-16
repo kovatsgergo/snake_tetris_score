@@ -1,0 +1,17 @@
+zenei alapanyag - evéskor a pozíciók a darab egyes negyedei
+Loopok hossza - kígyó hossza
+tempó - tempó
+transzpozíció - megevett kaja hue
+dinamika - kajáktól való távolság
+hangszerelés - fej és farok között távolság és irány // megevett kaja saturation
+?artikuláció?
+
+
+
+zenei alapanyag - evéskor
+Loopok hossza - kígyó hossza
+tempó - tempó
+transzpozíció - ?
+dinamika - ? legyen evéstől független
+hangszerelés - fej és farok között távolság és irány
+?artikuláció?

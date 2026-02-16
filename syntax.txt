@@ -1,131 +1,138 @@
 Snake-Tetris Score Protocol Syntax
 ==================================
 
-Last verified from:
+Last verified from (current code)
+---------------------------------
 - `server2.js`
-- `index.html` + `score-generator.js`
-- `snake.full.decoded.js` (decoded GWT build)
-- `server.js` (legacy)
+- `index.html` + `score-generator.js` (original score client)
+- `index2.html` + `score-generator2.js` (current variant)
+- `snake.full.decoded.js` (decoded snake build)
 - `SNAKE.MESSAGES.txt` (legacy notes)
 
 Transport
 ---------
 - WebSocket text frames only.
-- Messages are plain strings in the shape: `<type> <payload>`.
-- No JSON schema and no binary payloads in normal flow.
-- Type matching is case-sensitive.
-- `server2.js` routes using exact string checks and `startsWith(...)`.
+- Messages are plain strings: `<type> <payload...>`.
+- No JSON schema on the wire.
+- Routing in `server2.js` is mostly `startsWith(...)` based.
 
 Endpoints
 ---------
-- Score client: `index.html` opens `new WebSocket(location.origin.replace(/^http/, 'ws'))`.
-- Snake app: websocket host/port is compiled in the snake bundle.
-  - Active default in this build: `localhost:3000` (`LOCAL` index is selected).
-  - Alternate compiled target: `snaketetris.herokuapp.com:80`.
+- Score clients connect to `location.origin.replace(/^http/, 'ws')`.
+- Snake host websocket target is compiled in snake build.
 
 Room Model (`server2.js`)
 -------------------------
-- Each snake host owns one room (`ID`).
-- Multiple score clients can join the same room.
-- Room IDs are incremental, in-memory only (reset on server restart).
+- One snake host socket per room.
+- Multiple score clients can join that room.
+- Room IDs are in-memory incremental integers.
+- Restarting server resets room IDs/state.
 
 Message Types by Direction
 --------------------------
 1) Snake -> Server
 - `IAMSNAKE <roomIdHint>`
-  Sent on open. If room exists, snake rebinds; otherwise server creates a new room.
-- `<data packet>`
-  Any non-control snake message is relayed to all joined score clients in that room.
+- Any other payload is treated as snake data and forwarded to joined score clients.
 
 2) Server -> Snake
 - `ACCEPTED <roomId>`
-  Assigned/confirmed room ID.
 - `CLIENTS <count>`
-  Current number of joined score clients.
-- `BUSY`
-  Legacy single-host response (still handled by snake client code).
+- Score-originated passthrough messages (for example `snake` pull requests).
 
 3) Score -> Server
 - `IAMSCORE`
-  Register as score client.
 - `JOIN <roomId>`
-  Join a room (also detaches from previous room).
 - `BACK`
-  Leave room.
-- `snake`
-  Pull request for live timing/path update from snake.
-- `<other payload>`
-  Forwarded to the room snake socket (no schema validation).
+- `snake` (explicit pull request to snake host)
+- `SYNC <clientSentAtMs>` (clock sync request, Variant 2 client)
+- Any other payload is forwarded to snake host in that room.
 
 4) Server -> Score
 - `IDS <id1,id2,...>`
-  Current room list.
-- Forwarded snake data packets:
-  `notem`, `eaten`, `dynam`, `rhyth`, `snake`, `tempo`.
+- `SYNC <clientSentAtMs> <serverNowMs>` (response to score `SYNC`)
+- `SRVTIME <serverNowMs>` (sent before forwarded snake packet for sync-enabled clients)
+- Forwarded snake packets: `notem`, `eaten`, `dynam`, `rhyth`, `snake`, `tempo`.
 
-Data Packet Syntax (Snake -> Score)
------------------------------------
+Snake Data Packet Syntax
+------------------------
 1) `notem`
 - Format: `notem <f0> <f1> ... <f11>`
-- 12 note probability values (space separated).
+- 12 numeric note-probability values.
 
 2) `eaten`
-- Format: `eaten <x> <y> <amount> <hueBin> <satBin> <value>`
-- Source: `Food.toString()` -> `x y amount toHSVString(color)`.
-- Exact fields:
-  - `x`: food X grid coordinate (int)
-  - `y`: food Y grid coordinate (int)
-  - `amount`: food effect code (int)
-  - `hueBin`: HSV hue / 30
-  - `satBin`: HSV saturation * 3
+- Canonical format: `eaten <x> <y> <amount> <hueBin> <satBin> <value>`
+- Field meanings:
+  - `x`, `y`: food grid coordinate
+  - `amount`: food effect code
+  - `hueBin`: hue/30 bucket
+  - `satBin`: saturation*3 bucket
   - `value`: HSV value/brightness
-- In-game effect from `amount`:
-  - `-1`, `0`, `+1` -> `snake.grow(amount)`
-  - `-2`, `+2` -> speed slider changes by `amount/2 * 3` (so +/-3 steps)
+- Variant 2 parser is tolerant: it extracts numeric tokens and uses the first 6 as canonical eaten fields.
 
 3) `dynam`
 - Format: `dynam <d0> <d1> ...`
-- One value per snake segment.
-- Computed from food distances:
-  `10 - floor(sum(distances from segment to all foods) / 10)`.
+- Numeric values (ints or floats in current usage), one per snake segment.
 
 4) `rhyth`
 - Format: `rhyth <r0> <r1> ...`
-- Turn/run encoding derived from snake sprite direction changes.
-- Starts at `1`; straight segments increment current token.
-- Turn markers append one of: `101`, `201`, `301`, `401`.
+- Turn/run rhythm coding from snake movement.
 
 5) `snake`
 - Format: `snake <x0> <y0> <x1> <y1> ...`
-- Flat coordinate pairs, space separated.
-- Serialized in tail -> head order (head is the final pair).
+- Flat coordinate list.
+- Serialized tail -> head (head is final pair).
 
 6) `tempo`
 - Format: `tempo <t>`
-- Sent when snake speed slider changes.
-- Score-side conversion:
-  `tempo = Number(t) * 0.25 + 0.25`.
+- Numeric control value from snake speed.
+
+Score-Side Interpretation
+-------------------------
+Original client (`index.html` + `score-generator.js`)
+- `tempo` mapping: `tempo = Number(t) * 0.25 + 0.25` (quarter-per-second style).
+- `eaten` is stored as-is.
+- `snake` updates render immediately.
+- Playbar requests `snake` again at phrase end.
+
+Variant 2 client (`index2.html` + `score-generator2.js`)
+- Clock sync:
+  - Sends `SYNC <Date.now()>` on open and every 4s.
+  - Uses server `SYNC ...` and `SRVTIME ...` for shared timing.
+- `tempo` mapping to BPM-like value:
+  - `tempo = Number(t) * 15 + 50`
+  - quarter rate used by playhead/metronome is `tempo / 60`.
+- `eaten` drives transpose:
+  - `transposeSemitones = clamp(hueBin - 6, -6..+6)`
+- `snake` timing/order handling:
+  - `eaten` may arrive before fresh `snake`.
+  - On `eaten`, client requests `snake` immediately and waits for fresher snake snapshot.
+  - Passage content latch updates on eaten-sync point.
+- Slice mapping:
+  - `fromQuarter = headY * 16 + headX` (head is last snake pair)
+  - `numQuarters = snake.length / 2`
+- Dynamics rendering pipeline (Variant 2):
+  - Receive float/int `dynam` values.
+  - Remap for canvas text/color: clamp source `0..9`, map to `1..9`, round integer.
+  - Crescendo and decrescendo spans use intra-quarter color gradients to next quarter color.
 
 Pull/Push Behavior
 ------------------
-- When snake receives `CLIENTS <n>` and has `lastEaten`, it pushes full state:
-  `notem`, `eaten`, `dynam`, `rhyth`, `snake`.
-- Score periodically sends `snake` to request refreshed motion-timed data.
-- Snake replies to that pull with:
-  `dynam`, `rhyth`, `snake` (not `notem` or `eaten`).
+- Snake can push state packets (`notem/eaten/dynam/rhyth/snake/tempo`) to room clients.
+- Score can pull by sending `snake`.
+- Variant 2 additionally auto-sends `snake`:
+  - on `eaten` (request fresh state)
+  - at end of phrase/play cycle (loop update request)
 
 Legacy Notes
 ------------
-- `server.js` is older single-room protocol:
-  - snake login was `IAMSNAKE` (no room ID payload)
-  - server returned `ACCEPTED` or `BUSY`
-  - status text used `SNAKE-TETRIS ...`
-- `SNAKE.MESSAGES.txt` includes historical prefix `eatenSnake`.
-  Current code uses `eaten`.
+- Historical docs/examples mention `eatenSnake`.
+- Current websocket handlers use `eaten`.
+- Variant 2 eaten parser remains tolerant to mixed/legacy token streams by numeric extraction.
 
 Protocol Caveats
 ----------------
-- Server does no payload validation; it forwards raw text.
-- `snake` is both a command (score -> snake) and data type (snake -> score).
-  Direction/context disambiguates it.
-- Room state and IDs are not persisted.
+- Server performs minimal validation and mostly forwards raw payload strings.
+- `snake` is overloaded:
+  - score->snake command (`"snake"` request)
+  - snake->score data packet (`"snake <coords...>"`)
+- Direction/context determines meaning.

@@ -39,6 +39,65 @@ h2 {
     font-family: 'Petaluma';
 }
 
+.top-control-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    margin: 4px 0 0 0;
+}
+
+.main-control-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+
+.top-control-block {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.metronome-wrap {
+    gap: 14px;
+}
+
+.met-beat-index {
+    font-size: 46px;
+    line-height: 1;
+    min-width: 36px;
+    display: inline-block;
+    text-align: center;
+}
+
+.met-led {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    display: inline-block;
+    opacity: 0.25;
+    transform: scale(0.9);
+    transition: opacity 50ms linear, transform 50ms linear, box-shadow 50ms linear;
+}
+
+.met-led.met-led-red {
+    background: #c82b2b;
+}
+
+.met-led.met-led-blue {
+    background: #2e66d8;
+}
+
+.met-led.met-led-on {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 8px rgba(0, 0, 0, 0.35);
+}
+
 
 .scroll {
     opacity: 50%;

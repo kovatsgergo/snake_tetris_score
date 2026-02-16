@@ -86,6 +86,7 @@ function getAllIDs() {
 
 wss.on('connection', (ws, req) => {
   const ip = req.socket.remoteAddress;
+  ws.clockSyncEnabled = false;
   //ws.client.send('WHOAREYOU');
   //console.log(ws);
 
@@ -162,6 +163,13 @@ wss.on('connection', (ws, req) => {
       if (rooms.length > 0) {
         removeClient(ws);
       }
+    } else if (scoreClients.includes(ws) && data.startsWith('SYNC ')) {
+      // SCORE CLOCK SYNC REQUEST
+      var clientSentAt = Number(data.replace('SYNC ', ''));
+      if (Number.isFinite(clientSentAt)) {
+        ws.clockSyncEnabled = true;
+        ws.send('SYNC ' + clientSentAt + ' ' + Date.now());
+      }
     } else if (scoreClients.includes(ws)) {
       //SCORE SENDS MESSAGE TO SNAKE
       if (rooms.length > 0) {
@@ -174,8 +182,12 @@ wss.on('connection', (ws, req) => {
       console.log(data);
       if (rooms.length > 0) {
         var clients = getRoomOfSnake(ws).clients;
+        var serverNow = Date.now();
         if (clients.length > 0)
           clients.forEach(element => {
+            if (element.clockSyncEnabled) {
+              element.send('SRVTIME ' + serverNow);
+            }
             element.send(data);
           });
       }
