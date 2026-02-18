@@ -1,0 +1,4 @@
+1. Get rid of all unused methods or values from score-generator3.js. In the future, try not to write always a new solution with extra lines to compenasate old mistakes, try to keep the code short. Let's talk about pipelines more in the future before adding extra lines.
+2. Highlights and dynamics should always have the same X-dimension split points. So first you should calculate these general split points, then apply to both highlights and dynamics.
+3. Don't ever use multirests.
+4. Always align score to the left (not centered).

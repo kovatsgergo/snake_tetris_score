@@ -1,0 +1,38 @@
+[
+  {
+    "name": "split-drift-fq106-nq10-tr-4",
+    "staffIndex": 2,
+    "fromQuarter": 106,
+    "numQuarters": 10,
+    "transpose": -4,
+    "spacing": "engraved",
+    "font": "Bravura"
+  },
+  {
+    "name": "split-drift-fq413-nq10-tr-4",
+    "staffIndex": 2,
+    "fromQuarter": 413,
+    "numQuarters": 10,
+    "transpose": -4,
+    "spacing": "engraved",
+    "font": "Bravura"
+  },
+  {
+    "name": "timesig-bleed-fq200-nq9-tr0",
+    "staffIndex": 2,
+    "fromQuarter": 200,
+    "numQuarters": 9,
+    "transpose": 0,
+    "spacing": "engraved",
+    "font": "Bravura"
+  },
+  {
+    "name": "narrow-beat3-fq436-nq9-tr-6",
+    "staffIndex": 2,
+    "fromQuarter": 436,
+    "numQuarters": 9,
+    "transpose": -6,
+    "spacing": "engraved",
+    "font": "Bravura"
+  }
+]

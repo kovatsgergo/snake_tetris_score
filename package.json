@@ -5,15 +5,21 @@
   "main": "index.js",
   "dependencies": {
     "express": "^4.17.1",
+    "opensheetmusicdisplay": "^1.9.2",
     "vexflow": "^3.0.9",
     "ws": "^7.2.3"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.2.1"
   },
   "engines": {
     "node": "25.x",
     "npm": "11.x"
   },
   "scripts": {
-    "start": "node server2.js"
+    "start": "node server2.js",
+    "capture:index3": "node scripts/capture-index3.mjs",
+    "test:index3:splits": "node scripts/capture-index3.mjs --case-file tmp/index3-regression-cases.json --assert-mode strict-quarter --assert-tolerance-px 1.5 --settle-ms 900"
   },
   "keywords": [],
   "author": "kage",
