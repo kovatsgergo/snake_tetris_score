@@ -118,6 +118,91 @@ var phraseSwapInProgress = false;
 var phraseSwapTargetSnapshot = null;
 var phraseDeferredSwapTimer = 0;
 var currentPhraseSnapshot = null;
+var STEM_RULES_STORAGE_KEY = 'osmdStemRulesEnabled';
+var stemRulesEnabled = true;
+var stemRulesExtraStemLengthInSpaces = 0.0;
+
+function parseStemRulesEnabled(value) {
+  if (typeof value === 'string') {
+    var normalized = value.trim().toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes') {
+      return true;
+    }
+    if (normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no') {
+      return false;
+    }
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  return !!value;
+}
+
+function resolveInitialStemRulesEnabled() {
+  var configDefault = true;
+  if (window && window.SCORE_VIEW_CONFIG && typeof window.SCORE_VIEW_CONFIG.osmdStemRulesEnabled !== 'undefined') {
+    configDefault = !!window.SCORE_VIEW_CONFIG.osmdStemRulesEnabled;
+  }
+  try {
+    var storedValue = localStorage.getItem(STEM_RULES_STORAGE_KEY);
+    if (storedValue === null || storedValue === undefined || storedValue === '') {
+      return configDefault;
+    }
+    return parseStemRulesEnabled(storedValue);
+  } catch (error) {
+    return configDefault;
+  }
+}
+
+function ensureStemRulesRuntimeConfig() {
+  if (!window.__OSMD_STEM_RULES_CONFIG || typeof window.__OSMD_STEM_RULES_CONFIG !== 'object') {
+    window.__OSMD_STEM_RULES_CONFIG = {};
+  }
+  window.__OSMD_STEM_RULES_CONFIG.enabled = !!stemRulesEnabled;
+  window.__OSMD_STEM_RULES_CONFIG.extraStemLengthInSpaces = Number(stemRulesExtraStemLengthInSpaces) || 0.0;
+}
+
+function installStemRulesPatchIfAvailable() {
+  ensureStemRulesRuntimeConfig();
+  if (typeof window.installStandardStemRulesPatch !== 'function') {
+    return;
+  }
+  try {
+    window.installStandardStemRulesPatch(window.Vex || Vex, {
+      extraStemLengthInSpaces: Number(stemRulesExtraStemLengthInSpaces) || 0.0,
+      applyToUnbeamed: true,
+      applyToBeams: true,
+      debug: false,
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn('Stem rules patch install failed:', error);
+  }
+}
+
+function setStemRulesEnabled(value, options) {
+  options = options || {};
+  stemRulesEnabled = parseStemRulesEnabled(value);
+  ensureStemRulesRuntimeConfig();
+  try {
+    localStorage.setItem(STEM_RULES_STORAGE_KEY, stemRulesEnabled ? '1' : '0');
+  } catch (error) {
+    // ignore storage failures
+  }
+  var checkbox = document.getElementById('stemRulesEnabled');
+  if (checkbox) {
+    checkbox.checked = !!stemRulesEnabled;
+  }
+  if (!options.silent) {
+    renderMusicFromSnake();
+  }
+}
+
+window.setStemRulesEnabled = setStemRulesEnabled;
+
+stemRulesEnabled = resolveInitialStemRulesEnabled();
+ensureStemRulesRuntimeConfig();
+installStemRulesPatchIfAvailable();
 
 function setRange(instru) {
   instrument = instruments[instru];
@@ -270,6 +355,10 @@ function syncRenderOptionControls() {
   var fontSelect = document.getElementById('scoreFont');
   if (fontSelect) {
     fontSelect.value = selectedScoreFontName;
+  }
+  var stemRulesCheckbox = document.getElementById('stemRulesEnabled');
+  if (stemRulesCheckbox) {
+    stemRulesCheckbox.checked = !!stemRulesEnabled;
   }
 }
 
@@ -1527,11 +1616,9 @@ class MusicXMLQuarterSource {
 
         if (clippedStart) {
           clippedEvent.slurStarts = [];
-          clippedEvent.tieStarts = [];
         }
         if (clippedEnd) {
           clippedEvent.slurStops = [];
-          clippedEvent.tieStops = [];
         }
       } else if (clippedEvent.isRest && clippedEvent.measureRest) {
         // Fully visible measure rests stay whole-measure rests.
@@ -1704,6 +1791,20 @@ class MusicXMLQuarterSource {
       return String(marker || '1');
     }
 
+    function markerPlacement(marker) {
+      if (marker && typeof marker === 'object' && marker.placement) {
+        return String(marker.placement);
+      }
+      return '';
+    }
+
+    function normalizeSlurMarker(marker) {
+      return {
+        number: markerNumber(marker),
+        placement: markerPlacement(marker),
+      };
+    }
+
     function hasMarkerNumber(markers, number) {
       var target = String(number || '1');
       return (markers || []).some(function (marker) {
@@ -1711,10 +1812,173 @@ class MusicXMLQuarterSource {
       });
     }
 
+    function pushUniqueSlurMarker(markers, marker) {
+      if (!Array.isArray(markers)) {
+        return;
+      }
+      var normalized = normalizeSlurMarker(marker);
+      var found = false;
+      markers.forEach(function (current) {
+        if (found) {
+          return;
+        }
+        if (markerNumber(current) !== normalized.number) {
+          return;
+        }
+        found = true;
+        if (!current.placement && normalized.placement) {
+          current.placement = normalized.placement;
+        }
+      });
+      if (!found) {
+        markers.push(normalized);
+      }
+    }
+
+    function dedupeSlurMarkerArray(markers) {
+      var deduped = [];
+      (markers || []).forEach(function (marker) {
+        pushUniqueSlurMarker(deduped, marker);
+      });
+      return deduped;
+    }
+
     function pushMarkerNumber(markers, number) {
       var target = String(number || '1');
       if (!hasMarkerNumber(markers, target)) {
         markers.push({ number: target, placement: '' });
+      }
+    }
+
+    function normalizeSliceSlurAnchors(sliceEvents) {
+      if (!Array.isArray(sliceEvents) || sliceEvents.length === 0) {
+        return;
+      }
+
+      function findPrevNoteIndex(fromIndex) {
+        for (var i = fromIndex - 1; i >= 0; i--) {
+          if (sliceEvents[i] && !sliceEvents[i].isRest) {
+            return i;
+          }
+        }
+        return -1;
+      }
+
+      function findNextNoteIndex(fromIndex) {
+        for (var i = fromIndex + 1; i < sliceEvents.length; i++) {
+          if (sliceEvents[i] && !sliceEvents[i].isRest) {
+            return i;
+          }
+        }
+        return -1;
+      }
+
+      sliceEvents.forEach(function (event) {
+        if (!event) {
+          return;
+        }
+        event.slurStarts = dedupeSlurMarkerArray(event.slurStarts);
+        event.slurStops = dedupeSlurMarkerArray(event.slurStops);
+      });
+
+      for (var idx = 0; idx < sliceEvents.length; idx++) {
+        var event = sliceEvents[idx];
+        if (!event || !event.isRest) {
+          continue;
+        }
+        var starts = Array.isArray(event.slurStarts) ? event.slurStarts.slice() : [];
+        var stops = Array.isArray(event.slurStops) ? event.slurStops.slice() : [];
+        if (!starts.length && !stops.length) {
+          continue;
+        }
+
+        var nextNoteIndex = starts.length ? findNextNoteIndex(idx) : -1;
+        if (nextNoteIndex >= 0) {
+          var nextNote = sliceEvents[nextNoteIndex];
+          if (!Array.isArray(nextNote.slurStarts)) {
+            nextNote.slurStarts = [];
+          }
+          starts.forEach(function (marker) {
+            pushUniqueSlurMarker(nextNote.slurStarts, marker);
+          });
+        }
+
+        var prevNoteIndex = stops.length ? findPrevNoteIndex(idx) : -1;
+        if (prevNoteIndex >= 0) {
+          var prevNote = sliceEvents[prevNoteIndex];
+          if (!Array.isArray(prevNote.slurStops)) {
+            prevNote.slurStops = [];
+          }
+          stops.forEach(function (marker) {
+            pushUniqueSlurMarker(prevNote.slurStops, marker);
+          });
+        }
+
+        event.slurStarts = [];
+        event.slurStops = [];
+      }
+
+      sliceEvents.forEach(function (event) {
+        if (!event) {
+          return;
+        }
+        event.slurStarts = dedupeSlurMarkerArray(event.slurStarts);
+        event.slurStops = dedupeSlurMarkerArray(event.slurStops);
+      });
+
+      var openStartsByNumber = new Map();
+      for (var eventIndex = 0; eventIndex < sliceEvents.length; eventIndex++) {
+        var currentEvent = sliceEvents[eventIndex];
+        if (!currentEvent) {
+          continue;
+        }
+        var startMarkers = dedupeSlurMarkerArray(currentEvent.slurStarts);
+        var stopMarkers = dedupeSlurMarkerArray(currentEvent.slurStops);
+
+        currentEvent.slurStarts = startMarkers;
+        currentEvent.slurStops = [];
+
+        startMarkers.forEach(function (marker) {
+          var number = marker.number;
+          if (!openStartsByNumber.has(number)) {
+            openStartsByNumber.set(number, []);
+          }
+          openStartsByNumber.get(number).push(eventIndex);
+        });
+
+        stopMarkers.forEach(function (marker) {
+          var number = marker.number;
+          var openList = openStartsByNumber.get(number);
+          if (!openList || !openList.length) {
+            return;
+          }
+          openList.shift();
+          if (!openList.length) {
+            openStartsByNumber.delete(number);
+          }
+          pushUniqueSlurMarker(currentEvent.slurStops, marker);
+        });
+      }
+
+      if (openStartsByNumber.size > 0) {
+        var unmatchedByEvent = new Map();
+        openStartsByNumber.forEach(function (eventIndexes, number) {
+          eventIndexes.forEach(function (eventIndex) {
+            if (!unmatchedByEvent.has(eventIndex)) {
+              unmatchedByEvent.set(eventIndex, new Set());
+            }
+            unmatchedByEvent.get(eventIndex).add(String(number));
+          });
+        });
+        unmatchedByEvent.forEach(function (numberSet, eventIndex) {
+          var event = sliceEvents[eventIndex];
+          if (!event) {
+            return;
+          }
+          event.slurStarts = (event.slurStarts || []).filter(function (marker) {
+            return !numberSet.has(markerNumber(marker));
+          });
+        });
       }
     }
 
@@ -1798,7 +2062,9 @@ class MusicXMLQuarterSource {
       });
     }
 
+    normalizeSliceSlurAnchors(events);
     repairPartialSliceSlurs(events, targetStaff.events || []);
+    normalizeSliceSlurAnchors(events);
 
     return { events: events, barlines: barlines, keyChanges: keyChanges };
   }

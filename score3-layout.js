@@ -527,6 +527,196 @@ function osmdNormalizeMeasureEvents(events, measureStartQ, measureEndQ) {
   return normalized;
 }
 
+function osmdNormalizeEdgeTupletFragments(measureEvents, measureStartQ, measureEndQ) {
+  if (!Array.isArray(measureEvents) || measureEvents.length === 0) {
+    return;
+  }
+  var EPS = 1e-6;
+  var TUPLET_DURATION_EPS = 0.03;
+
+  function isEdgeBeat(beatStartQ) {
+    return Math.abs(beatStartQ - measureStartQ) <= EPS ||
+      Math.abs((beatStartQ + 1) - measureEndQ) <= EPS;
+  }
+
+  function markerNumberValue(marker, fallback) {
+    if (typeof marker === 'string') {
+      return String(marker || fallback || '1');
+    }
+    if (marker && marker.number !== undefined && marker.number !== null && marker.number !== '') {
+      return String(marker.number);
+    }
+    return String(fallback || '1');
+  }
+
+  function hasTupletStart(event, number) {
+    return (event.tupletStarts || []).some(function (marker) {
+      return markerNumberValue(marker, number) === String(number);
+    });
+  }
+
+  function hasTupletStop(event, number) {
+    return (event.tupletStops || []).some(function (marker) {
+      return markerNumberValue(marker, number) === String(number);
+    });
+  }
+
+  function removeTupletStartsByNumber(event, number) {
+    if (!Array.isArray(event.tupletStarts)) {
+      event.tupletStarts = [];
+      return;
+    }
+    event.tupletStarts = event.tupletStarts.filter(function (marker) {
+      return markerNumberValue(marker, number) !== String(number);
+    });
+  }
+
+  function removeTupletStopsByNumber(event, number) {
+    if (!Array.isArray(event.tupletStops)) {
+      event.tupletStops = [];
+      return;
+    }
+    event.tupletStops = event.tupletStops.filter(function (marker) {
+      return markerNumberValue(marker, number) !== String(number);
+    });
+  }
+
+  function forceTupletStart(event, number, bracketed) {
+    if (!Array.isArray(event.tupletStarts)) {
+      event.tupletStarts = [];
+    }
+    removeTupletStartsByNumber(event, number);
+    event.tupletStarts.push({
+      number: String(number),
+      bracketed: !!bracketed,
+    });
+  }
+
+  function forceTupletStop(event, number) {
+    if (!Array.isArray(event.tupletStops)) {
+      event.tupletStops = [];
+    }
+    removeTupletStopsByNumber(event, number);
+    event.tupletStops.push(String(number));
+  }
+
+  function applyForcedBeamPolicy(groupIndices, noteOnlyGroup) {
+    for (var i = 0; i < groupIndices.length; i++) {
+      var event = measureEvents[groupIndices[i]];
+      event.beams = {};
+      if (!noteOnlyGroup || event.isRest) {
+        continue;
+      }
+      if (groupIndices.length === 2) {
+        event.beams['1'] = i === 0 ? 'begin' : 'end';
+      } else if (i === 0) {
+        event.beams['1'] = 'begin';
+      } else if (i === groupIndices.length - 1) {
+        event.beams['1'] = 'end';
+      } else {
+        event.beams['1'] = 'continue';
+      }
+    }
+  }
+
+  var beatStart = Math.floor(measureStartQ + EPS);
+  var beatEnd = Math.ceil(measureEndQ - EPS);
+  for (var beatQ = beatStart; beatQ < beatEnd; beatQ++) {
+    if (!isEdgeBeat(beatQ)) {
+      continue;
+    }
+    var groupIndices = [];
+    for (var idx = 0; idx < measureEvents.length; idx++) {
+      var event = measureEvents[idx];
+      var startQ = Number(event && event.startQ);
+      var durationQ = Number(event && event.durationQ);
+      var actual = Number(event && event.tuplet && event.tuplet.actual);
+      var normal = Number(event && event.tuplet && event.tuplet.normal);
+      if (!Number.isFinite(startQ) || !Number.isFinite(durationQ)) {
+        continue;
+      }
+      if (startQ < beatQ - EPS || startQ >= beatQ + 1 - EPS) {
+        continue;
+      }
+      if (actual !== 6 || normal !== 4) {
+        continue;
+      }
+      if (Math.abs(durationQ - (1 / 3)) > TUPLET_DURATION_EPS) {
+        continue;
+      }
+      groupIndices.push(idx);
+    }
+    if (groupIndices.length !== 3) {
+      continue;
+    }
+    groupIndices.sort(function (a, b) {
+      return Number(measureEvents[a].startQ) - Number(measureEvents[b].startQ);
+    });
+
+    var groupHasAnyStart = groupIndices.some(function (groupIdx) {
+      var eventRef = measureEvents[groupIdx];
+      return Array.isArray(eventRef && eventRef.tupletStarts) && eventRef.tupletStarts.length > 0;
+    });
+    var groupHasAnyStop = groupIndices.some(function (groupIdx) {
+      var eventRef = measureEvents[groupIdx];
+      return Array.isArray(eventRef && eventRef.tupletStops) && eventRef.tupletStops.length > 0;
+    });
+    var firstEdge = Math.abs(beatQ - measureStartQ) <= EPS;
+    var lastEdge = Math.abs((beatQ + 1) - measureEndQ) <= EPS;
+    var looksClippedFragment = false;
+    if (firstEdge && !groupHasAnyStart && groupHasAnyStop) {
+      looksClippedFragment = true;
+    }
+    if (lastEdge && groupHasAnyStart && !groupHasAnyStop) {
+      looksClippedFragment = true;
+    }
+    if (!looksClippedFragment) {
+      continue;
+    }
+
+    var nearTripletGrid = true;
+    for (var gi = 0; gi < groupIndices.length; gi++) {
+      var eventAt = measureEvents[groupIndices[gi]];
+      var expectedQ = beatQ + (gi / 3);
+      if (Math.abs(Number(eventAt.startQ) - expectedQ) > 0.06) {
+        nearTripletGrid = false;
+        break;
+      }
+    }
+    if (!nearTripletGrid) {
+      continue;
+    }
+
+    var tupletNumber = '1';
+    var firstEvent = measureEvents[groupIndices[0]];
+    var lastEvent = measureEvents[groupIndices[groupIndices.length - 1]];
+    if (Array.isArray(firstEvent.tupletStarts) && firstEvent.tupletStarts.length > 0) {
+      tupletNumber = markerNumberValue(firstEvent.tupletStarts[0], '1');
+    } else if (Array.isArray(lastEvent.tupletStops) && lastEvent.tupletStops.length > 0) {
+      tupletNumber = markerNumberValue(lastEvent.tupletStops[0], '1');
+    }
+
+    groupIndices.forEach(function (groupIdx) {
+      var eventRef = measureEvents[groupIdx];
+      eventRef.tuplet = { actual: 3, normal: 2 };
+    });
+    var hasRestInGroup = groupIndices.some(function (groupIdx) {
+      return !!(measureEvents[groupIdx] && measureEvents[groupIdx].isRest);
+    });
+    groupIndices.forEach(function (groupIdx) {
+      var eventRef = measureEvents[groupIdx];
+      removeTupletStartsByNumber(eventRef, tupletNumber);
+      removeTupletStopsByNumber(eventRef, tupletNumber);
+    });
+    // Visual policy:
+    // note-only converted groups: force beaming and hide bracket.
+    // groups containing rests: remove forced beams and show bracket.
+    applyForcedBeamPolicy(groupIndices, !hasRestInGroup);
+    forceTupletStart(firstEvent, tupletNumber, hasRestInGroup);
+    forceTupletStop(lastEvent, tupletNumber);
+  }
+}
+
 function osmdHasExplicitBeam(event) {
   var beams = event && event.beams ? event.beams : null;
   if (!beams) {
@@ -687,6 +877,7 @@ function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, key
     });
     measureEvents = osmdNormalizeMeasureEvents(measureEvents, measureStartQ, measureEndQ);
     osmdApplyFallbackBeamingForClippedEdges(measureEvents, measureStartQ, measureEndQ);
+    osmdNormalizeEdgeTupletFragments(measureEvents, measureStartQ, measureEndQ);
 
     var keyFifths = getFifthsAtQuarter(keyChanges || [{ q: safeFrom, fifths: 0 }], measureStartQ);
     var timeSig = osmdQuarterLengthToTimeSignature(measureLengthQ);
@@ -1969,6 +2160,23 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     return false;
   }
   osmd.render();
+  if (typeof window.ensureOsmdStemRulesPatchedFromInstance === 'function') {
+    var patchedStemRules = false;
+    try {
+      patchedStemRules = !!window.ensureOsmdStemRulesPatchedFromInstance(osmd, {
+        extraStemLengthInSpaces: 0.0,
+        applyToUnbeamed: true,
+        applyToBeams: true,
+        debug: false,
+      });
+    } catch (stemPatchError) {
+      // eslint-disable-next-line no-console
+      console.warn('Stem rules runtime patch failed:', stemPatchError);
+    }
+    if (patchedStemRules) {
+      osmd.render();
+    }
+  }
   if (token !== osmdRenderEpoch) {
     return false;
   }

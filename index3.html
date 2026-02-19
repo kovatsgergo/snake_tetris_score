@@ -16,6 +16,7 @@
       document.write('<script src=\"https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.9.2/build/opensheetmusicdisplay.min.js\"><\\/script>');
     }
   </script>
+  <script type="text/javascript" src="/stemsPatch.js"></script>
   <script type="text/javascript" src="https://code.jquery.com/jquery-3.5.0.min.js"></script>
   <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
@@ -123,6 +124,16 @@
           <option value="Gonville">Gonville</option>
           <option value="Petaluma">Petaluma</option>
         </select>
+        <strong>Stem rules:</strong>
+        <label for="stemRulesEnabled" style="display: inline-flex; align-items: center; gap: 4px;">
+          <input
+            id="stemRulesEnabled"
+            type="checkbox"
+            checked
+            onchange="onStemRulesEnabledChange()"
+          />
+          on
+        </label>
       </div>
       <p id="net">net</p>
       <p id="snake">snake</p>
@@ -391,6 +402,14 @@
       return;
     }
     setScoreFont(document.getElementById('scoreFont').value);
+  }
+
+  function onStemRulesEnabledChange() {
+    if (typeof setStemRulesEnabled !== 'function') {
+      return;
+    }
+    var checkbox = document.getElementById('stemRulesEnabled');
+    setStemRulesEnabled(checkbox ? checkbox.checked : true);
   }
 
   async function copyCaseReport() {

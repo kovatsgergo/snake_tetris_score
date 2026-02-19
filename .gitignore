@@ -142,3 +142,5 @@ snakeXXX/
 
 .DS_Store
 artifacts/
+tmp/
+trash/

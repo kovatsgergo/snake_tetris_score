@@ -19,6 +19,7 @@
   "scripts": {
     "start": "node server2.js",
     "capture:index3": "node scripts/capture-index3.mjs",
+    "capture:conductor": "node scripts/capture-conductor.mjs",
     "test:index3:splits": "node scripts/capture-index3.mjs --case-file tmp/index3-regression-cases.json --assert-mode strict-quarter --assert-tolerance-px 1.5 --settle-ms 900"
   },
   "keywords": [],
