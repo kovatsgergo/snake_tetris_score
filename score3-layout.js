@@ -188,7 +188,7 @@ function setTacetSet(payload) {
 function updateTacetBanner(show) {
   var banner = document.getElementById('tacetBanner');
   if (!banner) return;
-  banner.style.display = show ? 'block' : 'none';
+  banner.style.display = show ? 'inline' : 'none';
 }
 
 function applyTacetSingleStaffOverlay(svg, staffIndex) {
@@ -931,7 +931,7 @@ function osmdSerializeTupletMarkers(starts, stops) {
   return out;
 }
 
-function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, keyChanges, staffName) {
+function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, keyChanges, staffName, clef) {
   var EPS = 1e-6;
   var safeFrom = Math.floor(Number(fromQuarter));
   var safeNum = Math.max(1, Math.floor(Number(numQuarters)));
@@ -986,7 +986,12 @@ function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, key
         timeSignatureStartsQ.push(measureStartQ);
       }
       if (m === 0) {
-        measureBody.push('<clef><sign>G</sign><line>2</line></clef>');
+        var clefSign = (clef && clef.sign) ? String(clef.sign) : 'G';
+        var clefLine = (clef && Number.isFinite(clef.line)) ? clef.line : 2;
+        var clefOctaveChange = (clef && Number.isFinite(clef.octaveChange) && clef.octaveChange !== 0) ? clef.octaveChange : null;
+        measureBody.push('<clef><sign>' + clefSign + '</sign><line>' + clefLine + '</line>' +
+          (clefOctaveChange !== null ? '<clef-octave-change>' + clefOctaveChange + '</clef-octave-change>' : '') +
+          '</clef>');
       }
       measureBody.push('</attributes>');
     }
@@ -2215,7 +2220,8 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     safeNumQuarters,
     barlinesQ || [],
     options.keyChanges || [{ q: fromQuarter, fifths: 0 }],
-    partName
+    partName,
+    tannhauserScore ? tannhauserScore.getStaffClef(staffIndex) : null
   );
   var xml = xmlBuild && xmlBuild.xml ? xmlBuild.xml : '';
   var timeSignatureStartsQ = xmlBuild && Array.isArray(xmlBuild.timeSignatureStartsQ)

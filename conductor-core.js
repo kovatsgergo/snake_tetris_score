@@ -1488,6 +1488,14 @@ class MusicXMLQuarterSource {
     return String(staff.shortName || staff.name || ('Staff ' + index));
   }
 
+  getStaffClef(index) {
+    var staff = this.getStaff(index);
+    if (!staff || !staff.clef) {
+      return { sign: 'G', line: 2, octaveChange: null };
+    }
+    return staff.clef;
+  }
+
   getStaffGroups() {
     return this.staffGroups.map(function (group) {
       return {

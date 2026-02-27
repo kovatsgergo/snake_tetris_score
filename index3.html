@@ -53,6 +53,7 @@
             <select id="staffChooser" onchange="onStaffChooserChange()"></select>
           </div>
           <div id="metronomeWrap" class="top-control-block metronome-wrap">
+            <span id="tacetBanner" style="display: none; font-size: 2.2em; font-weight: bold; letter-spacing: 0.15em; color: #666; margin-right: 16px;">TACET</span>
             <strong>Tempo:</strong>
             <span id="bpmValue">40 BPM</span>
             <strong>Beat:</strong>
@@ -63,7 +64,6 @@
           </div>
         </div>
       </div>
-      <div id="tacetBanner" style="display: none; font-size: 48px; font-weight: bold; letter-spacing: 0.15em; color: #666; padding: 4px 0; text-align: left;">TACET</div>
       <div id="score"></div>
       <div>
         <canvas id="dynCanvas" width="900" height="32"></canvas>

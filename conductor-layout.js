@@ -973,7 +973,7 @@ function osmdSerializeTupletMarkers(starts, stops) {
   return out;
 }
 
-function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, keyChanges, staffName) {
+function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, keyChanges, staffName, clef) {
   var EPS = 1e-6;
   var safeFrom = Math.floor(Number(fromQuarter));
   var safeNum = Math.max(1, Math.floor(Number(numQuarters)));
@@ -1028,7 +1028,12 @@ function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, key
         timeSignatureStartsQ.push(measureStartQ);
       }
       if (m === 0) {
-        measureBody.push('<clef><sign>G</sign><line>2</line></clef>');
+        var clefSign = (clef && clef.sign) ? String(clef.sign) : 'G';
+        var clefLine = (clef && Number.isFinite(clef.line)) ? clef.line : 2;
+        var clefOctaveChange = (clef && Number.isFinite(clef.octaveChange) && clef.octaveChange !== 0) ? clef.octaveChange : null;
+        measureBody.push('<clef><sign>' + clefSign + '</sign><line>' + clefLine + '</line>' +
+          (clefOctaveChange !== null ? '<clef-octave-change>' + clefOctaveChange + '</clef-octave-change>' : '') +
+          '</clef>');
       }
       measureBody.push('</attributes>');
     }
@@ -1183,7 +1188,8 @@ function osmdBuildConductorSliceMusicXml(staffSlices, fromQuarter, numQuarters, 
       numQuarters,
       barlinesQ || [],
       Array.isArray(slice.keyChanges) && slice.keyChanges.length ? slice.keyChanges : [{ q: fromQuarter, fifths: 0 }],
-      staffName
+      staffName,
+      slice.clef || null
     );
     var partBody = osmdExtractSinglePartBody(single && single.xml ? single.xml : '');
     if (!partBody) {
@@ -3351,6 +3357,7 @@ function buildConductorPhraseSnapshot(fromQuarter, numQuarters) {
     staffSlices.push({
       staffIndex: staffIdx,
       staffName: tannhauserScore.getStaffName(staffIdx),
+      clef: tannhauserScore.getStaffClef(staffIdx),
       keyChanges: transposedKeyChanges,
       events: transposedEvents,
       barlines: Array.isArray(sliceData.barlines) ? sliceData.barlines.slice() : [],
@@ -3400,7 +3407,8 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     safeNumQuarters,
     barlinesQ || [],
     options.keyChanges || [{ q: fromQuarter, fifths: 0 }],
-    partName
+    partName,
+    tannhauserScore ? tannhauserScore.getStaffClef(staffIndex) : null
   );
   var xml = xmlBuild && xmlBuild.xml ? xmlBuild.xml : '';
   var timeSignatureStartsQ = xmlBuild && Array.isArray(xmlBuild.timeSignatureStartsQ)

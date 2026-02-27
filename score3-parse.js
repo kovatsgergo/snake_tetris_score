@@ -247,6 +247,7 @@ function parsePartToTimeline(partEl) {
   var divisions = 1;
   var cursorQ = 0;
   var keyChanges = [{ q: 0, fifths: 0 }];
+  var initialClef = null;
   var primaryVoice = selectPrimaryVoice(partEl);
   var lastNoteStartQByVoice = new Map();
   var eventMap = new Map();
@@ -309,6 +310,21 @@ function parsePartToTimeline(partEl) {
           var parsedFifths = Number(fifthsText);
           if (Number.isFinite(parsedFifths)) {
             upsertKeyChange(measureStartQ, parsedFifths);
+          }
+        }
+        if (initialClef === null) {
+          var clefEl = child.querySelector('clef');
+          if (clefEl) {
+            var clefSign = textOf(clefEl, 'sign') || 'G';
+            var clefLineText = textOf(clefEl, 'line');
+            var clefLine = clefLineText ? Number(clefLineText) : 2;
+            var clefOctaveText = textOf(clefEl, 'clef-octave-change');
+            var clefOctave = clefOctaveText ? Number(clefOctaveText) : 0;
+            initialClef = {
+              sign: clefSign,
+              line: Number.isFinite(clefLine) ? clefLine : 2,
+              octaveChange: (Number.isFinite(clefOctave) && clefOctave !== 0) ? clefOctave : null,
+            };
           }
         }
         return;
@@ -496,6 +512,7 @@ function parsePartToTimeline(partEl) {
     keyChanges: keyChanges
       .slice()
       .sort(function (a, b) { return a.q - b.q; }),
+    clef: initialClef,
   };
 }
 
@@ -599,6 +616,7 @@ function parseMusicXMLDocument(scoreDoc) {
       events: timeline.events,
       measureBoundariesQ: timeline.measureBoundariesQ,
       keyChanges: timeline.keyChanges || [{ q: 0, fifths: 0 }],
+      clef: timeline.clef || null,
     };
   });
   var staffIndexByPartId = new Map();
