@@ -1390,7 +1390,8 @@ function clampTransposeSemitones(value) {
     return 0;
   }
   var intValue = parsed < 0 ? Math.ceil(parsed) : Math.floor(parsed);
-  return Math.max(-6, Math.min(6, intValue));
+  var tMin = (typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6;
+  return Math.max(tMin, Math.min(tMin + 24, intValue));
 }
 
 function syncTransposeInputControl() {

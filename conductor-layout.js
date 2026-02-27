@@ -183,8 +183,8 @@ function setEaten(message) {
 
   var hueBin = Number.isFinite(numericTokens[3]) ? numericTokens[3] : Number(eaten[3]);
   if (Number.isFinite(hueBin)) {
-    // Requested mapping: transpose = hueBin - 6
-    transposeSemitones = clampTransposeSemitones(hueBin - 6);
+    // Requested mapping: transpose = hueBin + TRANSPOSE_MIN
+    transposeSemitones = clampTransposeSemitones(hueBin + ((typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6));
     syncTransposeInputControl();
   }
 

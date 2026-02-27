@@ -6,6 +6,7 @@ const {
 } = require('ws');
 
 const PORT = process.env.PORT || 10000;
+const appConfig = require('./config.js');
 //const INDEX = '/index.html';
 
 const server = express()
@@ -18,7 +19,7 @@ const wss = new Server({
 
 const TRANSPORT_DEFAULT_BPM = 60;
 const TRANSPORT_START_LEAD_MS = 350;
-const TEMPO_TABLE_BPM = [50, 65, 85, 110];
+const TEMPO_TABLE_BPM = appConfig.TEMPO_TABLE_BPM;
 var scoreClients = [];
 //var snakeClient = null;
 //var snakeClientIP = null;
