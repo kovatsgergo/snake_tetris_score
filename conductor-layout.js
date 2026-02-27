@@ -59,6 +59,23 @@ function buildStaffChooser() {
   refreshDebugSliceInputs();
 }
 
+function applyScoreLoopMode(rawQ, totalQ) {
+  if (!totalQ || totalQ <= 0) {
+    return rawQ;
+  }
+  var mode = (typeof SCORE_LOOP_MODE !== 'undefined') ? SCORE_LOOP_MODE : 'wrap';
+  if (mode === 'palindrome') {
+    var period = 2 * (totalQ - 1);
+    if (period <= 0) {
+      return 0;
+    }
+    var n = ((rawQ % period) + period) % period;
+    return n < totalQ ? n : period - n;
+  }
+  // Default: wrap
+  return rawQ % totalQ;
+}
+
 function calculateFromQuarterFromSnake() {
   if (!snake || snake.length < 2) {
     return null;
@@ -71,7 +88,14 @@ function calculateFromQuarterFromSnake() {
     return null;
   }
 
-  return headY * game_Width + headX;
+  var rawQ = headY * game_Width + headX;
+  if (tannhauserScore) {
+    var totalQ = tannhauserScore.getTotalQuarters(selectedStaff());
+    if (totalQ > 0) {
+      return applyScoreLoopMode(rawQ, totalQ);
+    }
+  }
+  return rawQ;
 }
 
 function calculateNumQuartersFromSnake() {
@@ -186,14 +210,14 @@ function setEaten(message) {
 
 async function loadTannhauserMxl() {
   try {
-    setDebugStatus('Loading /tannhauser.mxl ...');
+    setDebugStatus('Loading ' + SCORE_FILE + ' ...');
     if (typeof JSZip === 'undefined') {
       throw new Error('JSZip was not loaded.');
     }
 
-    var response = await fetch('/tannhauser.mxl');
+    var response = await fetch(SCORE_FILE);
     if (!response.ok) {
-      throw new Error('Failed to fetch tannhauser.mxl: ' + response.status);
+      throw new Error('Failed to fetch ' + SCORE_FILE + ': ' + response.status);
     }
 
     var mxlArrayBuffer = await response.arrayBuffer();
@@ -251,7 +275,7 @@ async function loadTannhauserMxl() {
     }
 
     buildStaffChooser();
-    setDebugStatus('Loaded tannhauser.mxl with ' + tannhauserScore.getStaffCount() + ' staves.');
+    setDebugStatus('Loaded ' + SCORE_FILE + ' with ' + tannhauserScore.getStaffCount() + ' staves.');
 
     if (pendingEatenRender) {
       renderMusicFromSnake();

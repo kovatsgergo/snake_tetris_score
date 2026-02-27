@@ -1437,7 +1437,14 @@ function refreshDebugSliceInputs(renderFromQuarter, renderNumQuarters) {
 }
 
 function setDebugSliceControls(fromQuarterValue, numQuartersValue) {
-  debugOverrideFromQuarter = parseOptionalNonNegativeInt(fromQuarterValue);
+  var rawFrom = parseOptionalNonNegativeInt(fromQuarterValue);
+  if (rawFrom !== null && tannhauserScore) {
+    var totalQ = tannhauserScore.getTotalQuarters(selectedStaff());
+    if (totalQ > 0) {
+      rawFrom = applyScoreLoopMode(rawFrom, totalQ);
+    }
+  }
+  debugOverrideFromQuarter = rawFrom;
   debugOverrideNumQuarters = parseOptionalNonNegativeInt(numQuartersValue);
   refreshDebugSliceInputs();
   renderMusicFromSnake();
@@ -1490,6 +1497,14 @@ class MusicXMLQuarterSource {
         endStaffIndex: group.endStaffIndex,
       };
     });
+  }
+
+  getTotalQuarters(staffIndex) {
+    var staff = this.getStaff(staffIndex);
+    if (!staff) {
+      return 0;
+    }
+    return staff.quarters.length;
   }
 
   // staff index is 0-based. staff=2 means "3rd staff".
