@@ -63,6 +63,7 @@
           </div>
         </div>
       </div>
+      <div id="tacetBanner" style="display: none; font-size: 48px; font-weight: bold; letter-spacing: 0.15em; color: #666; padding: 4px 0; text-align: left;">TACET</div>
       <div id="score"></div>
       <div>
         <canvas id="dynCanvas" width="900" height="32"></canvas>
@@ -317,6 +318,8 @@
       }
     } else if (event.data.startsWith('IDS ')) {
       handleIDS(event.data.replace('IDS ', ''));
+    } else if (event.data.startsWith('TACET')) {
+      setTacetSet(event.data.replace('TACET', '').trim());
     } else if (event.data.startsWith('eaten')) {
       document.getElementById('eaten').innerHTML = event.data;
       setEaten(event.data.replace('eaten ', ''));

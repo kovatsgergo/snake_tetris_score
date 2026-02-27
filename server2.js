@@ -124,6 +124,23 @@ function sendTransportToClient(client, room) {
   }
 }
 
+function buildTacetMessage(message, staffCount) {
+  if (!message.startsWith('eaten ')) return null;
+  var tokens = message.slice(6).trim().split(/\s+/).map(Number);
+  if (tokens.length < 5 || !Number.isFinite(tokens[4])) return null;
+  var satBin = Math.round(tokens[4]);
+  var tacetCount = Math.max(0, Math.min(3, 3 - satBin));
+  if (tacetCount === 0) return 'TACET';
+  var count = (Number.isFinite(staffCount) && staffCount > 0) ? staffCount : 3;
+  var indices = [];
+  for (var j = 0; j < count; j++) indices.push(j);
+  for (var j = indices.length - 1; j > 0; j--) {
+    var k = Math.floor(Math.random() * (j + 1));
+    var tmp = indices[j]; indices[j] = indices[k]; indices[k] = tmp;
+  }
+  return 'TACET ' + indices.slice(0, tacetCount).join(' ');
+}
+
 function maybeUpdateRoomTransportFromTempoMessage(room, message, serverNow) {
   if (!room || typeof message !== 'string' || !message.startsWith('tempo')) {
     return false;
@@ -294,6 +311,9 @@ wss.on('connection', (ws, req) => {
         if (room) {
           room.clients.push(ws);
           room.update();
+          if (ws.reportedStaffCount > 0) {
+            room.staffCount = ws.reportedStaffCount;
+          }
           sendTempoTableToClient(ws);
           sendTransportToClient(ws, room);
         }
@@ -316,6 +336,15 @@ wss.on('connection', (ws, req) => {
           sendTransportToClient(ws, syncRoom);
         }
       }
+    } else if (scoreClients.includes(ws) && message.startsWith('STAFFCOUNT ')) {
+      var reportedCount = Number(message.replace('STAFFCOUNT ', ''));
+      if (Number.isFinite(reportedCount) && reportedCount > 0) {
+        ws.reportedStaffCount = Math.round(reportedCount);
+        var staffCountRoom = getRoomOfClient(ws);
+        if (staffCountRoom) {
+          staffCountRoom.staffCount = ws.reportedStaffCount;
+        }
+      }
     } else if (scoreClients.includes(ws)) {
       //SCORE SENDS MESSAGE TO SNAKE
       if (rooms.length > 0) {
@@ -335,6 +364,7 @@ wss.on('connection', (ws, req) => {
         var serverNow = Date.now();
         maybeUpdateRoomTransportFromTempoMessage(room, message, serverNow);
         var transportMessage = buildTransportMessage(room, serverNow);
+        var tacetMessage = buildTacetMessage(message, room.staffCount);
         if (clients.length > 0)
           clients.forEach(element => {
             if (element.clockSyncEnabled) {
@@ -344,6 +374,9 @@ wss.on('connection', (ws, req) => {
               element.send(transportMessage);
             }
             element.send(message);
+            if (tacetMessage !== null) {
+              element.send(tacetMessage);
+            }
           });
       }
     }

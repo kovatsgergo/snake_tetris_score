@@ -159,6 +159,61 @@ function setSnakeCoordinates(message) {
   renderMusicFromSnake();
 }
 
+var currentTacetCount = 0;
+var currentTacetSet = [];
+
+function recomputeTacetSet(tacetCount) {
+  currentTacetCount = Math.max(0, Math.min(3, tacetCount));
+  currentTacetSet = [];
+  if (currentTacetCount <= 0) return;
+  var staffCount = tannhauserScore ? tannhauserScore.getStaffCount() : 0;
+  if (staffCount <= 0) return;
+  var indices = [];
+  for (var idx = 0; idx < staffCount; idx++) indices.push(idx);
+  for (var j = indices.length - 1; j > 0; j--) {
+    var k = Math.floor(Math.random() * (j + 1));
+    var tmp = indices[j]; indices[j] = indices[k]; indices[k] = tmp;
+  }
+  currentTacetSet = indices.slice(0, currentTacetCount);
+}
+
+function setTacetSet(payload) {
+  var trimmed = String(payload || '').trim();
+  currentTacetSet = trimmed.length > 0
+    ? trimmed.split(/\s+/).map(Number).filter(Number.isFinite).map(Math.round)
+    : [];
+  currentTacetCount = currentTacetSet.length;
+}
+
+function updateTacetBanner(show) {
+  var banner = document.getElementById('tacetBanner');
+  if (!banner) return;
+  banner.style.display = show ? 'block' : 'none';
+}
+
+function applyTacetSingleStaffOverlay(svg, staffIndex) {
+  if (!svg) return;
+  var oldOverlays = svg.querySelectorAll('.tacet-overlay');
+  for (var n = 0; n < oldOverlays.length; n++) oldOverlays[n].parentNode.removeChild(oldOverlays[n]);
+  var isTacet = currentTacetSet.indexOf(Number(staffIndex)) !== -1;
+  updateTacetBanner(isTacet);
+  if (!isTacet) return;
+  var vbRaw = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
+  var vbX = Number.isFinite(vbRaw[0]) ? vbRaw[0] : 0;
+  var vbY = Number.isFinite(vbRaw[1]) ? vbRaw[1] : 0;
+  var vbW = Number.isFinite(vbRaw[2]) ? vbRaw[2] : 900;
+  var vbH = Number.isFinite(vbRaw[3]) ? vbRaw[3] : 200;
+  var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('class', 'tacet-overlay');
+  rect.setAttribute('x', String(vbX));
+  rect.setAttribute('y', String(vbY));
+  rect.setAttribute('width', String(vbW));
+  rect.setAttribute('height', String(vbH));
+  rect.setAttribute('fill', 'rgba(255,255,255,0.55)');
+  rect.setAttribute('stroke', 'none');
+  svg.appendChild(rect);
+}
+
 // Override: in this variant eaten triggers quarter extraction and notation display.
 function setEaten(message) {
   var raw = String(message || '').trim();
@@ -276,6 +331,10 @@ async function loadTannhauserMxl() {
 
     buildStaffChooser();
     setDebugStatus('Loaded ' + SCORE_FILE + ' with ' + tannhauserScore.getStaffCount() + ' staves.');
+
+    if (typeof wsSend === 'function') {
+      wsSend('STAFFCOUNT ' + tannhauserScore.getStaffCount());
+    }
 
     if (pendingEatenRender) {
       renderMusicFromSnake();
@@ -2383,6 +2442,8 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     };
     window.lastRenderDiagnostics = lastRenderDiagnostics;
   }
+
+  applyTacetSingleStaffOverlay(svg, staffIndex);
 
   return true;
 }
