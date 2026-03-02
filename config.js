@@ -5,7 +5,7 @@ var SCORE_FILE = '/dongiovanni.mxl';
 var SCORE_LOOP_MODE = 'wrap';
 
 // BPM levels mapped to the in-game tempo control (index 0 = slowest).
-var TEMPO_TABLE_BPM = [50, 65, 80, 90];
+var TEMPO_TABLE_BPM = [40, 50, 63, 78];
 
 // Minimum transposition in semitones.
 // The active range is [TRANSPOSE_MIN, TRANSPOSE_MIN + hueBins] where hueBins

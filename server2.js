@@ -20,19 +20,55 @@ const wss = new Server({
 const TRANSPORT_DEFAULT_BPM = 60;
 const TRANSPORT_START_LEAD_MS = 350;
 const TEMPO_TABLE_BPM = appConfig.TEMPO_TABLE_BPM;
+const TRANSPOSE_MIN = (typeof appConfig.TRANSPOSE_MIN === 'number') ? appConfig.TRANSPOSE_MIN : -6;
 var scoreClients = [];
 //var snakeClient = null;
 //var snakeClientIP = null;
 var roomCounter = 0;
 var rooms = [];
 
+function getDefaultBpm() {
+  // Use the 2nd entry (index 1) in the tempo table as the default bpm,
+  // falling back to index 0 or TRANSPORT_DEFAULT_BPM if unavailable.
+  var table = sanitizeTempoTable(TEMPO_TABLE_BPM);
+  if (table.length >= 2) {
+    return table[1];
+  }
+  if (table.length === 1) {
+    return table[0];
+  }
+  return TRANSPORT_DEFAULT_BPM;
+}
+
 function createInitialTransport(nowMs) {
   var baseNow = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
   return {
     epochMs: Math.round(baseNow + TRANSPORT_START_LEAD_MS),
-    bpm: TRANSPORT_DEFAULT_BPM,
+    bpm: getDefaultBpm(),
     revision: 1,
   };
+}
+
+function buildDefaultSnakeMessage() {
+  // 4 segments (tail-to-head) all on row 0: (3,0) (2,0) (1,0) (0,0)
+  // => fromQuarter = headY * game_Width + headX = 0*16+0 = 0
+  // => numQuarters = floor(snake.length / 2) = 4
+  return 'snake 3 0 2 0 1 0 0 0';
+}
+
+function buildDefaultEatenMessage() {
+  // eaten <x> <y> <amount> <hueBin> <satBin> <value>
+  // x=0, y=0  => fromQuarter = 0
+  // hueBin = -TRANSPOSE_MIN so that transpose = hueBin + TRANSPOSE_MIN = 0
+  // satBin=3 => tacetCount = max(0, min(3, 3-3)) = 0 => TACET (all play)
+  var hueBin = -TRANSPOSE_MIN;
+  return 'eaten 0 0 4 ' + hueBin + ' 3 1';
+}
+
+function buildInitialStateMessage(eatenMsg, snakeMsg) {
+  var eatenPayload = String(eatenMsg || '').replace(/^eaten\s*/, '').trim();
+  var snakePayload = String(snakeMsg || '').replace(/^snake\s*/, '').trim();
+  return 'INITIAL_STATE ' + eatenPayload + ' snake ' + snakePayload;
 }
 
 function clampTransportBpm(bpm) {
@@ -177,6 +213,11 @@ class Room {
     this.clients = [];
     this.ID = roomCounter + 1;
     this.transport = createInitialTransport(Date.now());
+    this.lastSnakeMessage = buildDefaultSnakeMessage();
+    this.lastEatenMessage = buildDefaultEatenMessage();
+    this.lastSnakeAtEaten = buildDefaultSnakeMessage();
+    this.awaitingPostEatSnap = false;
+    this.lastTacetMessage = buildTacetMessage(this.lastEatenMessage, null);
     roomCounter++;
   }
   update() {
@@ -316,6 +357,15 @@ wss.on('connection', (ws, req) => {
           }
           sendTempoTableToClient(ws);
           sendTransportToClient(ws, room);
+          if (room.lastEatenMessage && room.lastSnakeAtEaten) {
+            ws.send(buildInitialStateMessage(room.lastEatenMessage, room.lastSnakeAtEaten));
+          } else {
+            if (room.lastSnakeMessage) ws.send(room.lastSnakeMessage);
+            if (room.lastEatenMessage) ws.send(room.lastEatenMessage);
+          }
+          if (room.lastTacetMessage) {
+            ws.send(room.lastTacetMessage);
+          }
         }
       }
     } else if (message === 'BACK') {
@@ -365,6 +415,20 @@ wss.on('connection', (ws, req) => {
         maybeUpdateRoomTransportFromTempoMessage(room, message, serverNow);
         var transportMessage = buildTransportMessage(room, serverNow);
         var tacetMessage = buildTacetMessage(message, room.staffCount);
+        if (message.startsWith('snake ')) {
+          room.lastSnakeMessage = message;
+          if (room.awaitingPostEatSnap) {
+            room.lastSnakeAtEaten = message;
+            room.awaitingPostEatSnap = false;
+          }
+        }
+        if (message.startsWith('eaten ')) {
+          room.lastEatenMessage = message;
+          room.awaitingPostEatSnap = true;
+        }
+        if (tacetMessage !== null) {
+          room.lastTacetMessage = tacetMessage;
+        }
         if (clients.length > 0)
           clients.forEach(element => {
             if (element.clockSyncEnabled) {
