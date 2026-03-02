@@ -5,14 +5,14 @@ var SCORE_FILE = '/dongiovanni.mxl';
 var SCORE_LOOP_MODE = 'wrap';
 
 // BPM levels mapped to the in-game tempo control (index 0 = slowest).
-var TEMPO_TABLE_BPM = [50, 65, 85, 110];
+var TEMPO_TABLE_BPM = [50, 65, 80, 90];
 
 // Minimum transposition in semitones.
 // The active range is [TRANSPOSE_MIN, TRANSPOSE_MIN + hueBins] where hueBins
 // is determined by the snake game (currently 12).
 // Example: TRANSPOSE_MIN = -6 → range [-6, +6] with 12 bins
 //          TRANSPOSE_MIN =  0 → range [ 0, +12] with 12 bins
-var TRANSPOSE_MIN = -6;
+var TRANSPOSE_MIN = -2;
 
 // Export for Node.js (server2.js); ignored by browsers.
 if (typeof module !== 'undefined' && module.exports) {
