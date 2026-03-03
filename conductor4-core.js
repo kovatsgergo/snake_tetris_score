@@ -432,7 +432,9 @@ function setDynamics(message) {
   dynamics = messageArray.map((val) => {
     return Number(val);
   });
-  if (typeof window !== 'undefined' && typeof window.redrawDynamicsOnly === 'function') {
+  // Only redraw immediately when the playbar is idle (not mid-phrase).
+  // When mid-phrase the canvas stays frozen; handleCycleBoundary flushes at phrase end.
+  if (!playbarAnimationFrame && typeof window !== 'undefined' && typeof window.redrawDynamicsOnly === 'function') {
     window.redrawDynamicsOnly();
   }
 }

@@ -3280,6 +3280,8 @@ function drawAndAnimatePlaybarTimeMapped(
       return true;
     }
     snakeRequestedForCycle = false;
+    // Flush any dynamics update that arrived mid-phrase.
+    redrawDynamicsOnly();
     return false;
   }
 
@@ -4329,6 +4331,9 @@ async function commitPhraseSwapTargetSnapshot(snapshot) {
 }
 
 function redrawDynamicsOnly() {
+  if (phrasePreviewAwaitingSwap || phraseSwapInProgress) {
+    return;
+  }
   if (!osmdLayout.dynamicsXForQuarter) {
     return;
   }
