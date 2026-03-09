@@ -3,7 +3,7 @@
 <html>
 
 <head>
-  <title>Score for Snake-Tetris (Variant 4, OSMD)</title>
+  <title>Score for Snake-Tetris (Variant 7, OSMD)</title>
   <meta http-equiv="content-type" content="text/html; charset=UTF-8">
   <link rel="stylesheet" href="/style.css">
   <!--link rel="preload" href="/font/Petaluma.eot" as="font">
@@ -39,7 +39,7 @@
     </fieldset>
   </div>
   <div id="control2" style="position: relative; display: none;" >
-    <fieldset>
+    <fieldset class="panel7 panel7-play">
       <legend id="playLegend">
         PLAY!
         <button id="back" onclick="goBack()">
@@ -62,24 +62,28 @@
         </div>
       </div>
       <div id="score"></div>
-      <div style="display: flex; align-items: center;">
+      <div class="score-footer-row">
         <span id="metLedEighth" class="met-led met-led-red" title="Beat pulse" style="width: 63px; height: 63px; flex-shrink: 0; margin-right: 8px;"></span>
         <canvas id="dynCanvas" width="900" height="32"></canvas>
       </div>
     </fieldset>
   </div>
-  <fieldset>
+  <fieldset class="panel7 panel7-debug">
     <legend>Debug <button onclick="toggleDebug()">toggle</button></legend>
     <div id="control3" style="display: none;">
-      <div style="margin: 8px 0;">
+      <div class="debug-controls-row" style="margin: 8px 0;">
         <label for="debugFromQuarter">fromQuarter:</label>
+        <label style="margin-left: 4px; display: inline-flex; align-items: center; gap: 4px;">
+          <input id="autoFromQuarterEnabled" type="checkbox" checked onchange="onAutoFromQuarterChange()" />
+          Auto
+        </label>
         <input
           id="debugFromQuarter"
           type="number"
           min="0"
           step="1"
           style="width: 90px;"
-          oninput="onDebugSliceControlChange()"
+          oninput="onManualFromQuarterChange()"
         />
         <label for="debugTransposeSemitones" style="margin-left: 12px;">transpose (st):</label>
         <label style="margin-left: 4px; display: inline-flex; align-items: center; gap: 4px;">
@@ -101,13 +105,17 @@
           <option value="9">+9</option>
         </select>
         <label for="debugNumQuarters" style="margin-left: 12px;">numQuarters:</label>
+        <label style="margin-left: 4px; display: inline-flex; align-items: center; gap: 4px;">
+          <input id="autoNumQuartersEnabled" type="checkbox" checked onchange="onAutoNumQuartersChange()" />
+          Auto
+        </label>
         <input
           id="debugNumQuarters"
           type="number"
           min="1"
           step="1"
           style="width: 90px;"
-          oninput="onDebugSliceControlChange()"
+          oninput="onManualNumQuartersChange()"
         />
         <button
           id="copyCaseReportBtn"
@@ -168,6 +176,7 @@
       <p id="tempo">tempo</p>
       <p id="rhythm">rhythm</p>
       <p id="renderInfo">render info</p>
+      <p id="timingDebug">timing debug</p>
       <p id="debug">debug</p>
     </div>
   </fieldset>
@@ -176,9 +185,9 @@
 </body>
 
 <script src="/config.js"></script>
-<script src="/score4-core.js"></script>
+<script src="/score7-core.js"></script>
 <script src="/score3-parse.js"></script>
-<script src="/score4-layout.js"></script>
+<script src="/score7-layout.js"></script>
 <script>
   var HOST = location.origin.replace(/^http/, 'ws');
 
@@ -193,6 +202,7 @@
   var youReIn = ' – You\'re in room nr. ';
   var scoreElement = document.getElementById('score');
   var clockSyncTimerID = 0;
+  var hasRoomClockAuthority = false;
 
   function init(){
     $('#control2').slideUp();
@@ -228,7 +238,11 @@
     //console.log("go BACK");
     $('#control2').slideUp()
     $('#control').slideDown();
+    if (typeof stopPlaybarMotion === 'function') {
+      stopPlaybarMotion();
+    }
     clearScore();
+    hasRoomClockAuthority = false;
   }
 
   function toggleDebug() {
@@ -294,6 +308,7 @@
   }
 
   ws.onopen = function (event) {
+    hasRoomClockAuthority = false;
     ws.send('IAMSCORE');
     requestClockSync();
     if (!clockSyncTimerID) {
@@ -323,7 +338,55 @@
       if (typeof setServerMessageTime === 'function') {
         setServerMessageTime(Number(event.data.replace('SRVTIME ', '')));
       }
-    } else if (event.data.startsWith('TRANSPORT ')) {
+    } else if (event.data.startsWith('ROOM_CLOCK ')) {
+      var roomClockParts = event.data.trim().split(/\s+/);
+      if (roomClockParts.length >= 7 && typeof setRoomClock === 'function') {
+        hasRoomClockAuthority = true;
+        setRoomClock(
+          roomClockParts[1],
+          roomClockParts[2],
+          roomClockParts[3],
+          roomClockParts[4],
+          roomClockParts[5],
+          roomClockParts[6]
+        );
+      }
+    } else if (event.data.startsWith('ROOM_STATE ')) {
+      var roomStateParts = event.data.trim().split(/\s+/);
+      if (roomStateParts.length >= 13 && typeof setRoomState === 'function') {
+        setRoomState(
+          roomStateParts[1],
+          roomStateParts[2],
+          roomStateParts[3],
+          roomStateParts[4],
+          roomStateParts[5],
+          roomStateParts[6],
+          roomStateParts[7],
+          roomStateParts[8],
+          roomStateParts[9],
+          roomStateParts[10],
+          roomStateParts[11],
+          roomStateParts[12],
+          roomStateParts.length > 13 ? roomStateParts[13] : undefined,
+          roomStateParts.length > 14 ? roomStateParts[14] : undefined
+        );
+        if (typeof handleRoomStateUpdate === 'function') {
+          handleRoomStateUpdate();
+        }
+      }
+    } else if (!hasRoomClockAuthority && event.data.startsWith('TRANSPORT_STATE ')) {
+      var transportStateParts = event.data.trim().split(/\s+/);
+      if (transportStateParts.length >= 6 && typeof setTransportSnapshot === 'function') {
+        setTransportSnapshot(
+          transportStateParts[1],
+          transportStateParts[2],
+          transportStateParts[3],
+          transportStateParts[4],
+          transportStateParts[5],
+          transportStateParts[6]
+        );
+      }
+    } else if (!hasRoomClockAuthority && event.data.startsWith('TRANSPORT ')) {
       var transportParts = event.data.trim().split(/\s+/);
       if (transportParts.length >= 3 && typeof setTransportState === 'function') {
         setTransportState(transportParts[1], transportParts[2], transportParts[3], transportParts[4]);
@@ -353,6 +416,9 @@
         document.getElementById('eaten').innerHTML = 'eaten ' + isEatenPart;
         document.getElementById('snake').innerHTML = 'snake ' + isSnakePart;
         setInitialState(isEatenPart, isSnakePart);
+        if (typeof renderMusicFromSnake === 'function') {
+          renderMusicFromSnake();
+        }
       }
     } else if (event.data.startsWith('eaten')) {
       document.getElementById('eaten').innerHTML = event.data;
@@ -416,16 +482,45 @@
     );
   }
 
+  function onAutoFromQuarterChange() {
+    var checkbox = document.getElementById('autoFromQuarterEnabled');
+    var enabled = checkbox ? checkbox.checked : true;
+    if (typeof setAutoFromQuarter === 'function') {
+      setAutoFromQuarter(enabled);
+    }
+  }
+
+  function onManualFromQuarterChange() {
+    var checkbox = document.getElementById('autoFromQuarterEnabled');
+    if (checkbox && !checkbox.checked) {
+      if (typeof setManualFromQuarter === 'function') {
+        setManualFromQuarter(document.getElementById('debugFromQuarter').value);
+      }
+    }
+  }
+
+  function onAutoNumQuartersChange() {
+    var checkbox = document.getElementById('autoNumQuartersEnabled');
+    var enabled = checkbox ? checkbox.checked : true;
+    if (typeof setAutoNumQuarters === 'function') {
+      setAutoNumQuarters(enabled);
+    }
+  }
+
+  function onManualNumQuartersChange() {
+    var checkbox = document.getElementById('autoNumQuartersEnabled');
+    if (checkbox && !checkbox.checked) {
+      if (typeof setManualNumQuarters === 'function') {
+        setManualNumQuarters(document.getElementById('debugNumQuarters').value);
+      }
+    }
+  }
+
   function onAutoTransposeChange() {
     var checkbox = document.getElementById('autoTransposeEnabled');
     var enabled = checkbox ? checkbox.checked : true;
     if (typeof setAutoTranspose === 'function') {
       setAutoTranspose(enabled);
-    }
-    if (!enabled) {
-      if (typeof setTransposeSemitones === 'function') {
-        setTransposeSemitones(document.getElementById('debugTransposeSemitones').value);
-      }
     }
   }
 

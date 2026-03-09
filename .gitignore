@@ -145,3 +145,7 @@ artifacts/
 tmp/
 trash/
 Don Giovanni Romos.xml
+scripts/
+.playwright-cli/
+v7-backup*
+other_versions/

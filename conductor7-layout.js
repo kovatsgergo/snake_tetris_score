@@ -132,31 +132,10 @@ function setSnakeCoordinates(message) {
 
   snakeSnapshotVersion++;
   if (pendingEatenRender) {
-    // After eaten, wait for a fresher snake snapshot before rendering.
     if (snakeSnapshotVersion >= renderWaitSnakeVersion) {
-      renderMusicFromSnake();
+      clearEatenRenderPendingState();
     }
-    return;
   }
-
-  // Legacy loop behavior: every snake packet refreshes render/playbar,
-  // while passage content stays latched until the next eaten-sync update.
-  if (phraseSwapInProgress) {
-    // Keep current phrase untouched until preview swap finishes.
-    return;
-  }
-  if (phrasePreviewAwaitingSwap) {
-    // If preview is waiting but playback loop already stopped, kick off the
-    // pending swap so metronome/highlight can continue on the committed phrase.
-    ensurePreviewSwapProgress(serverNowMs());
-    return;
-  }
-  if (playbarAnimationFrame) {
-    // Phrase content is driven only by eating events; ignore mid-phrase snake
-    // position updates so the phrase loops until the next eaten event.
-    return;
-  }
-  renderMusicFromSnake();
 }
 
 var currentTacetCount = 0;
@@ -210,7 +189,7 @@ function applyTacetConductorOverlays(svg, staffBands) {
   }
 }
 
-// Override: in this variant eaten triggers quarter extraction and notation display.
+// Keep eaten for diagnostics/transposition hints; phrase timing comes from ROOM_STATE.
 function setEaten(message) {
   var raw = String(message || '').trim();
   var rawTokens = raw.length > 0 ? raw.split(/\s+/) : [];
@@ -238,25 +217,6 @@ function setEaten(message) {
     transposeSemitones = clampTransposeSemitones(hueBin + ((typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6));
     syncTransposeInputControl();
   }
-
-  pendingEatenRender = true;
-  // Wait for a newer snake snapshot than the currently known one.
-  renderWaitSnakeVersion = snakeSnapshotVersion + 1;
-
-  // Proactively request a fresh snake state from the game side.
-  if (typeof wsSend === 'function') {
-    wsSend('snake');
-  }
-
-  // Fallback in case the fresh snapshot is delayed/lost.
-  if (eatenRenderFallbackTimer) {
-    clearTimeout(eatenRenderFallbackTimer);
-  }
-  eatenRenderFallbackTimer = setTimeout(function () {
-    if (pendingEatenRender) {
-      renderMusicFromSnake();
-    }
-  }, EATEN_RENDER_FALLBACK_MS);
 }
 
 function setInitialState(eatenPayload, snakePayload) {
@@ -280,8 +240,136 @@ function setInitialState(eatenPayload, snakePayload) {
   // Apply snake coordinates directly
   snake = String(snakePayload || '').trim().split(/\s+/).map(Number);
   snakeSnapshotVersion++;
-  // Render immediately — no pendingEatenRender, no live snake request
-  renderMusicFromSnake();
+}
+
+function parseRoomStatePhraseDescriptor(fromValue, numValue, transposeValue) {
+  var fromQuarter = Number(fromValue);
+  var numQuarters = Number(numValue);
+  var transpose = Number(transposeValue);
+  if (!Number.isFinite(fromQuarter) || !Number.isFinite(numQuarters) || numQuarters <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(transpose)) {
+    transpose = 0;
+  }
+  if (tannhauserScore && typeof tannhauserScore.getTotalQuarters === 'function') {
+    var totalQ = Number(tannhauserScore.getTotalQuarters(selectedStaff()));
+    if (Number.isFinite(totalQ) && totalQ > 0) {
+      fromQuarter = applyScoreLoopMode(fromQuarter, totalQ);
+      numQuarters = Math.max(1, Math.min(numQuarters, Math.floor(totalQ)));
+      var safeNum = Math.max(1, Math.floor(numQuarters));
+      var maxStart = Math.max(0, Math.floor(totalQ) - safeNum);
+      fromQuarter = Math.max(0, Math.min(Math.floor(fromQuarter), maxStart));
+    }
+  }
+  return {
+    fromQuarter: Math.floor(fromQuarter),
+    numQuarters: Math.max(1, Math.floor(numQuarters)),
+    transposeSemitones: Math.floor(transpose),
+  };
+}
+
+function resolveRoomStateTransposeValue(serverTranspose) {
+  if (typeof autoTransposeEnabled !== 'undefined' && !autoTransposeEnabled) {
+    return clampTransposeSemitones(transposeSemitones);
+  }
+  return serverTranspose;
+}
+
+function resolveRoomStateFromQuarterValue(serverFromQuarter) {
+  if (typeof autoFromQuarterEnabled !== 'undefined' && !autoFromQuarterEnabled) {
+    var manualFrom = Number(debugOverrideFromQuarter);
+    if (Number.isFinite(manualFrom)) {
+      return Math.max(0, Math.floor(manualFrom));
+    }
+  }
+  return serverFromQuarter;
+}
+
+function resolveRoomStateNumQuartersValue(serverNumQuarters) {
+  if (typeof autoNumQuartersEnabled !== 'undefined' && !autoNumQuartersEnabled) {
+    var manualNum = Number(debugOverrideNumQuarters);
+    if (Number.isFinite(manualNum) && manualNum > 0) {
+      return Math.max(1, Math.floor(manualNum));
+    }
+  }
+  return serverNumQuarters;
+}
+
+function readRoomStateCurrentPhrase() {
+  if (!roomStateSnapshot) {
+    return null;
+  }
+  return parseRoomStatePhraseDescriptor(
+    resolveRoomStateFromQuarterValue(roomStateSnapshot.currentFrom),
+    resolveRoomStateNumQuartersValue(roomStateSnapshot.currentNum),
+    resolveRoomStateTransposeValue(roomStateSnapshot.currentTranspose)
+  );
+}
+
+function readRoomStateCandidatePhrase() {
+  if (!roomStateSnapshot) {
+    return null;
+  }
+  var candidate = parseRoomStatePhraseDescriptor(
+    resolveRoomStateFromQuarterValue(roomStateSnapshot.candidateFrom),
+    resolveRoomStateNumQuartersValue(roomStateSnapshot.candidateNum),
+    resolveRoomStateTransposeValue(roomStateSnapshot.candidateTranspose)
+  );
+  if (!candidate) {
+    return null;
+  }
+  if (candidate.fromQuarter < 0) {
+    return null;
+  }
+  return candidate;
+}
+
+function phraseDescriptorEqualsSnapshot(descriptor, snapshot) {
+  if (!descriptor || !snapshot) {
+    return false;
+  }
+  return (
+    Number(descriptor.fromQuarter) === Number(snapshot.fromQuarter) &&
+    Number(descriptor.numQuarters) === Number(snapshot.numQuarters) &&
+    Number(descriptor.transposeSemitones) === Number(snapshot.transposeSemitones)
+  );
+}
+
+function phraseDescriptorsEqual(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+  return (
+    Number(a.fromQuarter) === Number(b.fromQuarter) &&
+    Number(a.numQuarters) === Number(b.numQuarters) &&
+    Number(a.transposeSemitones) === Number(b.transposeSemitones)
+  );
+}
+
+async function syncAuthoritativeCandidatePreview(currentDescriptor) {
+  if (phraseSwapInProgress) {
+    return false;
+  }
+  var candidateDescriptor = readRoomStateCandidatePhrase();
+  if (!candidateDescriptor || phraseDescriptorsEqual(currentDescriptor, candidateDescriptor)) {
+    removePhrasePreviewOverlay(false);
+    return false;
+  }
+  if (phraseDescriptorEqualsSnapshot(candidateDescriptor, phrasePreviewSnapshot)) {
+    return true;
+  }
+  var previousTranspose = transposeSemitones;
+  transposeSemitones = candidateDescriptor.transposeSemitones;
+  var candidateSnapshot = buildConductorPhraseSnapshot(
+    candidateDescriptor.fromQuarter,
+    candidateDescriptor.numQuarters
+  );
+  transposeSemitones = previousTranspose;
+  if (!candidateSnapshot) {
+    return false;
+  }
+  return showPhrasePreview(candidateSnapshot);
 }
 
 async function loadTannhauserMxl() {
@@ -357,9 +445,7 @@ async function loadTannhauserMxl() {
       wsSend('STAFFCOUNT ' + tannhauserScore.getStaffCount());
     }
 
-    if (pendingEatenRender) {
-      renderMusicFromSnake();
-    }
+    renderMusicFromSnake();
   } catch (error) {
     setDebugStatus('MXL load/parse error: ' + error.message);
   }
@@ -395,7 +481,10 @@ function clearScore(options) {
     container.style.position = 'relative';
     container.style.overflow = 'hidden';
     container.style.textAlign = 'left';
-    container.style.width = full_Width + 'px';
+    container.style.width = '100%';
+    container.style.maxWidth = full_Width + 'px';
+    container.style.margin = '0 auto';
+    container.style.boxSizing = 'border-box';
     container.style.height = full_Height + 'px';
   }
   osmdLayout.svg = null;
@@ -446,20 +535,20 @@ function applyFixedScoreSvgStyle(svg) {
     return;
   }
   // Keep engraving size fixed by explicit pixel scaling from viewBox.
-  // Do not stretch to canvas dimensions.
+  // Let CSS scale down responsively on smaller viewports.
   var vbRaw = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
   var vbWidth = vbRaw.length >= 3 && Number.isFinite(vbRaw[2]) ? vbRaw[2] : null;
   var vbHeight = vbRaw.length >= 4 && Number.isFinite(vbRaw[3]) ? vbRaw[3] : null;
   var fixedScale = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
   if (Number.isFinite(vbWidth) && vbWidth > 0 && Number.isFinite(vbHeight) && vbHeight > 0) {
     svg.style.width = (vbWidth * fixedScale).toFixed(3) + 'px';
-    svg.style.height = (vbHeight * fixedScale).toFixed(3) + 'px';
+    svg.style.height = 'auto';
   } else {
     svg.style.width = 'auto';
     svg.style.height = 'auto';
   }
-  svg.style.maxWidth = 'none';
-  svg.style.maxHeight = 'none';
+  svg.style.maxWidth = '100%';
+  svg.style.maxHeight = '100%';
   svg.style.display = 'block';
   svg.style.margin = '0';
   svg.style.pointerEvents = 'none';
@@ -3226,30 +3315,47 @@ function drawAndAnimatePlaybarTimeMapped(
   }
 
   playbarLastStepMs = serverNowMs();
-  var snakeRequestedForCycle = false;
   var swapTriggeredThisCycle = false;
   var lastCycleIndex = null;
   var phrasePhaseAnchorQuarters = null;
+  var lastRoomQuarterCounter = Number.NaN;
+  var lastRoomBeatInPhrase = Number.NaN;
 
-  function setUpcomingPhraseStartAnchor(anchorQuarters) {
-    if (typeof setPendingPhraseStartAnchor !== 'function') {
+  function publishTimingDebug(state, absoluteQuarters, progressedQuarters, roomQuarter, roomBeat, roomBeats) {
+    if (typeof updateTimingDebugLine !== 'function') {
       return;
     }
-    var numeric = Number(anchorQuarters);
-    if (!Number.isFinite(numeric)) {
-      return;
-    }
-    setPendingPhraseStartAnchor(numeric);
+    updateTimingDebugLine({
+      state: state,
+      roomQuarter: roomQuarter,
+      roomBeat: roomBeat,
+      roomBeats: roomBeats,
+      absoluteQuarters: absoluteQuarters,
+      progressedQuarters: progressedQuarters,
+      anchorQuarters: phrasePhaseAnchorQuarters,
+      fromQuarter: fromQuarter,
+      numQuarters: safeNumQuarters,
+    });
   }
 
-  function requestSnakeForCycle() {
-    if (snakeRequestedForCycle) {
-      return;
+  function hasAuthoritativePhraseControl() {
+    return !!readRoomStateCurrentPhrase();
+  }
+
+  function applyAuthoritativeBoundaryState() {
+    var currentDescriptor = readRoomStateCurrentPhrase();
+    if (!currentDescriptor) {
+      return false;
     }
-    snakeRequestedForCycle = true;
-    if (typeof wsSend === 'function') {
-      wsSend('snake');
+    var alreadyCurrent = phraseDescriptorEqualsSnapshot(currentDescriptor, currentPhraseSnapshot);
+    if (alreadyCurrent && playbarAnimationFrame) {
+      return false;
     }
+    removePhrasePreviewOverlay(false);
+    playbarAnimationFrame = 0;
+    playbarLastStepMs = 0;
+    renderMusicFromSnake();
+    return true;
   }
 
   function showPreStartFrame(now) {
@@ -3266,19 +3372,35 @@ function drawAndAnimatePlaybarTimeMapped(
       playheadLine.setAttribute('x1', String(preStartWindow.startX));
       playheadLine.setAttribute('x2', String(preStartWindow.startX));
     }
+    publishTimingDebug('pre', Number.NaN, 0, Number.NaN, Number.NaN, totalQuarterBeats);
     refreshMetronomeVisual(now);
     playbarAnimationFrame = requestAnimationFrame(step);
   }
 
-  function handleCycleBoundary(now, totalQuarterBeats, boundaryAnchorQuarters) {
-    requestSnakeForCycle();
+  function handleCycleBoundary(now, totalQuarterBeats) {
+    if (typeof applyQueuedDynamicsAtPhraseStart === 'function') {
+      applyQueuedDynamicsAtPhraseStart(true);
+    }
     refreshMetronomeVisual(now);
-    setBeatIndexDisplay(totalQuarterBeats, totalQuarterBeats);
+    setBeatIndexDisplay(1, totalQuarterBeats);
+    if (hasAuthoritativePhraseControl()) {
+      if (!phraseSwapInProgress && phrasePreviewAwaitingSwap) {
+        startPhraseSwapAnimation(now);
+      }
+      if (phraseSwapInProgress || phrasePreviewAwaitingSwap) {
+        playbarAnimationFrame = 0;
+        playbarLastStepMs = 0;
+        return true;
+      }
+      if (applyAuthoritativeBoundaryState()) {
+        return true;
+      }
+      redrawDynamicsOnly();
+      return false;
+    }
     // Fallback: if swap wasn't triggered early (e.g. very short phrase), start it now.
     if (!phraseSwapInProgress && phrasePreviewAwaitingSwap) {
-      if (startPhraseSwapAnimation(now)) {
-        setUpcomingPhraseStartAnchor(boundaryAnchorQuarters);
-      }
+      startPhraseSwapAnimation(now);
     }
     if (phraseSwapInProgress || phrasePreviewAwaitingSwap) {
       playbarAnimationFrame = 0;
@@ -3292,10 +3414,6 @@ function drawAndAnimatePlaybarTimeMapped(
       renderMusicFromSnake();
       return true;
     }
-    snakeRequestedForCycle = false;
-    if (typeof applyPendingTransportState === 'function') {
-      applyPendingTransportState();
-    }
     // Flush any dynamics update that arrived mid-phrase.
     redrawDynamicsOnly();
     return false;
@@ -3306,36 +3424,36 @@ function drawAndAnimatePlaybarTimeMapped(
     playbarLastStepMs = now;
 
     var tempoQps = Math.max(quarterRatePerSecond(), 1e-6);
-    var totalSeconds = safeNumQuarters / tempoQps;
-    var prefetchLeadSeconds = Math.max(0.2, Math.min(totalSeconds * 0.5, 1 / tempoQps));
     var absoluteQuarters;
     var phraseQuarters;
     var cycleIndex;
     var progressedQuarters;
-    var phaseSeconds;
+    var runningNow = (typeof transportIsRunning === 'function') ? !!transportIsRunning() : true;
+    var observedRoomQuarter = Number.isFinite(Number(roomClockQuarterCounter))
+      ? Math.floor(Number(roomClockQuarterCounter))
+      : Number.NaN;
+    var observedRoomBeat = Number.isFinite(Number(roomClockBeatInPhrase))
+      ? Math.floor(Number(roomClockBeatInPhrase))
+      : Number.NaN;
+    var observedRoomBeats = Math.max(1, Math.floor(Number(roomClockBeatsPerPhrase) || totalQuarterBeats));
 
-    if (!Number.isFinite(transportEpochMs)) {
+    if (typeof transportAbsoluteQuartersAt !== 'function') {
       showPreStartFrame(now);
       return;
     }
-
-    absoluteQuarters = (now - transportEpochMs) * tempoQps / 1000;
+    absoluteQuarters = Number(transportAbsoluteQuartersAt(now));
     if (!Number.isFinite(absoluteQuarters) || absoluteQuarters < 0) {
       showPreStartFrame(now);
       return;
     }
 
     if (!Number.isFinite(phrasePhaseAnchorQuarters)) {
-      var pendingAnchor = (typeof consumePendingPhraseStartAnchor === 'function')
-        ? Number(consumePendingPhraseStartAnchor())
-        : Number.NaN;
-      if (Number.isFinite(pendingAnchor)) {
-        phrasePhaseAnchorQuarters = pendingAnchor;
-      } else {
-      // Snap to the start of the current phrase cycle using the globally-shared
-      // absoluteQuarters, so all windows compute the same anchor regardless of
-      // when they first start rendering.
-        phrasePhaseAnchorQuarters = Math.floor(absoluteQuarters / safeNumQuarters) * safeNumQuarters;
+      phrasePhaseAnchorQuarters = Math.floor(absoluteQuarters / safeNumQuarters) * safeNumQuarters;
+    }
+    if (Number.isFinite(observedRoomQuarter) && Number.isFinite(observedRoomBeat)) {
+      var boundaryQuarter = observedRoomQuarter - (observedRoomBeat - 1);
+      if (Number.isFinite(boundaryQuarter)) {
+        phrasePhaseAnchorQuarters = boundaryQuarter;
       }
     }
 
@@ -3352,25 +3470,79 @@ function drawAndAnimatePlaybarTimeMapped(
     if (progressedQuarters >= safeNumQuarters) {
       progressedQuarters = Math.max(0, safeNumQuarters - 1e-6);
     }
-    phaseSeconds = progressedQuarters / tempoQps;
 
-    if (lastCycleIndex === null) {
+    if (!runningNow) {
       lastCycleIndex = cycleIndex;
-    } else if (cycleIndex > lastCycleIndex) {
-      var boundaryAnchorQuarters = phrasePhaseAnchorQuarters + cycleIndex * safeNumQuarters;
-      if (handleCycleBoundary(now, totalQuarterBeats, boundaryAnchorQuarters)) {
-        return;
-      }
-      lastCycleIndex = cycleIndex;
-    } else if (cycleIndex < lastCycleIndex) {
-      // Transport epoch/tempo revision can move phase backwards; restart per-cycle local flags.
-      snakeRequestedForCycle = false;
       swapTriggeredThisCycle = false;
-      lastCycleIndex = cycleIndex;
+
+      var pausedQuarter = fromQuarter + progressedQuarters;
+      var pausedBeatWindow = buildQuarterBeatWindow(
+        fromQuarter,
+        safeNumQuarters,
+        progressedQuarters,
+        xForQuarter,
+        splitPoints
+      );
+      if (Number.isFinite(observedRoomBeat)) {
+        setBeatIndexDisplay(observedRoomBeat, observedRoomBeats);
+      } else {
+        setBeatIndexDisplay(pausedBeatWindow.beatNumber, pausedBeatWindow.totalBeats);
+      }
+      updateBeatHighlightOverlay(beatOverlay, pausedBeatWindow.startX, pausedBeatWindow.endX);
+
+      if (playheadLine) {
+        var pausedX = xForQuarter(pausedQuarter);
+        if (Number.isFinite(pausedX)) {
+          playheadLine.setAttribute('x1', String(pausedX));
+          playheadLine.setAttribute('x2', String(pausedX));
+        }
+      }
+
+      publishTimingDebug(
+        'pause',
+        absoluteQuarters,
+        progressedQuarters,
+        observedRoomQuarter,
+        observedRoomBeat,
+        observedRoomBeats
+      );
+      refreshMetronomeVisual(now);
+      playbarAnimationFrame = requestAnimationFrame(step);
+      return;
     }
 
-    if (!snakeRequestedForCycle && phaseSeconds >= Math.max(0, totalSeconds - prefetchLeadSeconds)) {
-      requestSnakeForCycle();
+    var usedRoomBeatBoundary = Number.isFinite(observedRoomQuarter) && Number.isFinite(observedRoomBeat);
+    if (usedRoomBeatBoundary) {
+      if (!Number.isFinite(lastRoomQuarterCounter)) {
+        lastRoomQuarterCounter = observedRoomQuarter;
+        lastRoomBeatInPhrase = observedRoomBeat;
+      } else if (observedRoomQuarter > lastRoomQuarterCounter) {
+        var pendingBoundaries = Math.max(0, Math.floor(Number(pendingRoomBoundaryCount) || 0));
+        if (pendingBoundaries > 0 || observedRoomBeat === 1) {
+          pendingRoomBoundaryCount = 0;
+          if (handleCycleBoundary(now, observedRoomBeats)) {
+            return;
+          }
+          swapTriggeredThisCycle = false;
+        }
+        lastRoomQuarterCounter = observedRoomQuarter;
+        lastRoomBeatInPhrase = observedRoomBeat;
+      } else if (observedRoomQuarter === lastRoomQuarterCounter) {
+        lastRoomBeatInPhrase = observedRoomBeat;
+      }
+    } else {
+      if (lastCycleIndex === null) {
+        lastCycleIndex = cycleIndex;
+      } else if (cycleIndex > lastCycleIndex) {
+        if (handleCycleBoundary(now, totalQuarterBeats)) {
+          return;
+        }
+        lastCycleIndex = cycleIndex;
+      } else if (cycleIndex < lastCycleIndex) {
+        // Transport epoch/tempo revision can move phase backwards; restart per-cycle local flags.
+        swapTriggeredThisCycle = false;
+        lastCycleIndex = cycleIndex;
+      }
     }
 
     // Trigger phrase swap 1 eighth note (0.5 quarters) before the end of the phrase.
@@ -3382,9 +3554,7 @@ function drawAndAnimatePlaybarTimeMapped(
       progressedQuarters >= safeNumQuarters - 0.5
     ) {
       swapTriggeredThisCycle = true;
-      if (startPhraseSwapAnimation(now)) {
-        setUpcomingPhraseStartAnchor(phrasePhaseAnchorQuarters + (cycleIndex + 1) * safeNumQuarters);
-      }
+      startPhraseSwapAnimation(now);
     }
 
     var currentQuarter = fromQuarter + progressedQuarters;
@@ -3396,7 +3566,11 @@ function drawAndAnimatePlaybarTimeMapped(
       xForQuarter,
       splitPoints
     );
-    setBeatIndexDisplay(currentBeatWindow.beatNumber, currentBeatWindow.totalBeats);
+    if (Number.isFinite(observedRoomBeat)) {
+      setBeatIndexDisplay(observedRoomBeat, observedRoomBeats);
+    } else {
+      setBeatIndexDisplay(currentBeatWindow.beatNumber, currentBeatWindow.totalBeats);
+    }
     updateBeatHighlightOverlay(beatOverlay, currentBeatWindow.startX, currentBeatWindow.endX);
 
     if (playheadLine) {
@@ -3407,6 +3581,14 @@ function drawAndAnimatePlaybarTimeMapped(
       }
     }
 
+    publishTimingDebug(
+      'run',
+      absoluteQuarters,
+      progressedQuarters,
+      observedRoomQuarter,
+      observedRoomBeat,
+      observedRoomBeats
+    );
     // Drive metronome from absolute transport time so all clients share the same pulse timeline.
     advanceMetronome(absoluteQuarters, now);
     playbarAnimationFrame = requestAnimationFrame(step);
@@ -4262,6 +4444,7 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
   var savedMainScoreElement = mainScoreElement;
   var savedRenderInfoText = readElementText('renderInfo');
   var savedDiagnostics = lastRenderDiagnostics;
+  var savedTransposeSemitones = transposeSemitones;
   var savedOsmdInstance = osmdInstance;
   var savedOsmdContainerRef = osmdContainerRef;
   var savedOsmdLayout = Object.assign({}, osmdLayout);
@@ -4303,6 +4486,8 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
     osmdContainerRef = savedOsmdContainerRef;
     osmdLayout = savedOsmdLayout;
     lastRenderDiagnostics = savedDiagnostics;
+    transposeSemitones = savedTransposeSemitones;
+    syncTransposeInputControl();
     setRenderInfo(savedRenderInfoText);
     if (tempContainer.parentNode) {
       tempContainer.parentNode.removeChild(tempContainer);
@@ -4357,9 +4542,6 @@ async function commitPhraseSwapTargetSnapshot(snapshot) {
 }
 
 function redrawDynamicsOnly() {
-  if (phrasePreviewAwaitingSwap || phraseSwapInProgress) {
-    return;
-  }
   if (!osmdLayout.dynamicsXForQuarter) {
     return;
   }
@@ -4381,64 +4563,30 @@ async function renderMusicFromSnakeCore() {
     return false;
   }
 
-  if (pendingEatenRender) {
-    updateLockedSliceFromSnake();
-  }
-
-  if (lockedFromQuarter === null || lockedNumQuarters === null) {
-    updateLockedSliceFromSnake();
-  }
-
-  var fromQuarter =
-    debugOverrideFromQuarter !== null ? debugOverrideFromQuarter : lockedFromQuarter;
-  if (fromQuarter === null) {
-    fromQuarter = calculateFromQuarterFromSnake();
-  }
-  var numQuarters =
-    debugOverrideNumQuarters !== null ? debugOverrideNumQuarters : lockedNumQuarters;
-  if (!Number.isFinite(numQuarters) || numQuarters <= 0) {
-    numQuarters = calculateNumQuartersFromSnake();
-  }
-
-  if (fromQuarter === null || numQuarters <= 0) {
+  var currentDescriptor = readRoomStateCurrentPhrase();
+  if (!currentDescriptor) {
     refreshDebugSliceInputs();
     return false;
   }
 
-  refreshDebugSliceInputs(fromQuarter, numQuarters);
+  lockedFromQuarter = currentDescriptor.fromQuarter;
+  lockedNumQuarters = currentDescriptor.numQuarters;
+  transposeSemitones = currentDescriptor.transposeSemitones;
+  syncTransposeInputControl();
+  refreshDebugSliceInputs(currentDescriptor.fromQuarter, currentDescriptor.numQuarters);
 
-  var snapshot = buildConductorPhraseSnapshot(fromQuarter, numQuarters);
+  var snapshot = buildConductorPhraseSnapshot(
+    currentDescriptor.fromQuarter,
+    currentDescriptor.numQuarters
+  );
   if (!snapshot) {
     clearEatenRenderPendingState();
     return false;
   }
 
-  if (pendingEatenRender && currentPhraseSnapshot) {
-    // Suppress spurious swaps (e.g. triggered by JOIN/BACK room refresh) when
-    // the incoming snapshot is identical to what is already showing.
-    if (snapshot.fromQuarter === currentPhraseSnapshot.fromQuarter &&
-        snapshot.numQuarters === currentPhraseSnapshot.numQuarters &&
-        snapshot.transposeSemitones === currentPhraseSnapshot.transposeSemitones) {
-      if (playbarAnimationFrame) {
-        // Playbar already running — nothing to do, suppress spurious swap.
-        clearEatenRenderPendingState();
-        return true;
-      }
-      // Playbar stopped (e.g. re-joined room mid-phrase) — fall through to
-      // re-render in place so the playbar restarts without a swap animation.
-    }
-    var previewShown = await showPhrasePreview(snapshot);
-    if (!previewShown) {
-      stopPlaybarMotion();
-      await renderPhraseSnapshot(snapshot);
-      currentPhraseSnapshot = snapshot;
-      clearEatenRenderPendingState();
-      return true;
-    }
-    clearEatenRenderPendingState();
-    if (!playbarAnimationFrame) {
-      startPhraseSwapAnimation(serverNowMs());
-    }
+  var alreadyCurrent = phraseDescriptorEqualsSnapshot(currentDescriptor, currentPhraseSnapshot);
+  if (alreadyCurrent && playbarAnimationFrame) {
+    await syncAuthoritativeCandidatePreview(currentDescriptor);
     return true;
   }
 
@@ -4446,6 +4594,8 @@ async function renderMusicFromSnakeCore() {
   await renderPhraseSnapshot(snapshot);
   currentPhraseSnapshot = snapshot;
   clearEatenRenderPendingState();
+  applyQueuedDynamicsAtPhraseStart(true);
+  await syncAuthoritativeCandidatePreview(currentDescriptor);
   return true;
 }
 
@@ -4460,5 +4610,20 @@ function renderMusicFromSnake() {
   });
   return osmdRenderQueue;
 }
+
+function handleRoomStateUpdate() {
+  if (typeof applyRoomStateDynamics === 'function') {
+    applyRoomStateDynamics(false);
+  }
+  var currentDescriptor = readRoomStateCurrentPhrase();
+  if (playbarAnimationFrame && currentPhraseSnapshot && currentDescriptor) {
+    // Keep commit strictly on boundary; only refresh candidate preview while running.
+    syncAuthoritativeCandidatePreview(currentDescriptor);
+    return;
+  }
+  renderMusicFromSnake();
+}
+
+window.handleRoomStateUpdate = handleRoomStateUpdate;
 
 loadTannhauserMxl();

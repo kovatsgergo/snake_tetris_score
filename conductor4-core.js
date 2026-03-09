@@ -117,6 +117,8 @@ var bestClockSyncRttMs = Number.POSITIVE_INFINITY;
 var hasClockSync = false;
 var transportEpochMs = Number.NaN;
 var transportRevision = 0;
+var pendingTransportState = null;
+var pendingPhraseStartAnchorQuarters = Number.NaN;
 var tempoLevelsBpm = [50, 65, 80, 95];
 var METRONOME_FLASH_MS = 90;
 var phrasePreviewSnapshot = null;
@@ -305,6 +307,9 @@ function setTempo(t) {
   if (!autoTempoEnabled) {
     return;
   }
+  if (hasAuthoritativeTransportClock()) {
+    return;
+  }
   var controlValue = Number(t);
   if (!Number.isFinite(controlValue)) {
     return;
@@ -455,30 +460,33 @@ function setServerMessageTime(serverMs) {
   }
 }
 
-function setTransportState(epochMs, bpm, revision, serverSentMs) {
-  var nextEpoch = Number(epochMs);
-  var nextBpm = Number(bpm);
-  var nextRevision = Number(revision);
-  var nextServerSent = Number(serverSentMs);
-  if (!Number.isFinite(nextEpoch) || !Number.isFinite(nextBpm) || nextBpm <= 0) {
-    return;
-  }
-  if (Number.isFinite(nextRevision) && nextRevision > 0 && nextRevision < transportRevision) {
-    return;
-  }
+function hasAuthoritativeTransportClock() {
+  return Number.isFinite(transportEpochMs) && Number.isFinite(transportRevision) && transportRevision > 0;
+}
 
-  if (Number.isFinite(nextServerSent) && !hasClockSync) {
-    // Fast bootstrap before RTT-based SYNC stabilizes: estimate offset from
-    // server send timestamp carried by TRANSPORT.
-    serverClockOffsetMs = nextServerSent - Date.now();
+function normalizeTransportRevision(revision) {
+  var numeric = Number(revision);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return Number.NaN;
   }
+  return Math.floor(numeric);
+}
 
+function highestKnownTransportRevision() {
+  var highest = Number.isFinite(transportRevision) && transportRevision > 0 ? Math.floor(transportRevision) : 0;
+  if (pendingTransportState && Number.isFinite(pendingTransportState.revision)) {
+    highest = Math.max(highest, pendingTransportState.revision);
+  }
+  return highest;
+}
+
+function applyTransportStateNow(nextEpoch, nextBpm, nextRevision) {
   var hadEpoch = Number.isFinite(transportEpochMs);
   var revisionAdvanced = Number.isFinite(nextRevision) && nextRevision > transportRevision;
 
   transportEpochMs = nextEpoch;
-  if (Number.isFinite(nextRevision) && nextRevision > 0) {
-    transportRevision = Math.floor(nextRevision);
+  if (Number.isFinite(nextRevision)) {
+    transportRevision = nextRevision;
   } else if (transportRevision <= 0) {
     transportRevision = 1;
   }
@@ -492,6 +500,82 @@ function setTransportState(epochMs, bpm, revision, serverSentMs) {
     metronomeQuarterUntilMs = 0;
     metronomeEighthUntilMs = 0;
   }
+}
+
+function hasPendingTransportState() {
+  return !!pendingTransportState;
+}
+
+function queuePendingTransportState(nextEpoch, nextBpm, nextRevision, nextServerSent) {
+  pendingTransportState = {
+    epochMs: nextEpoch,
+    bpm: nextBpm,
+    revision: nextRevision,
+    serverSentMs: nextServerSent,
+  };
+}
+
+function applyPendingTransportState() {
+  if (!pendingTransportState) {
+    return false;
+  }
+  var next = pendingTransportState;
+  pendingTransportState = null;
+  applyTransportStateNow(next.epochMs, next.bpm, next.revision);
+  return true;
+}
+
+function setPendingPhraseStartAnchor(anchorQuarters) {
+  var numeric = Number(anchorQuarters);
+  if (!Number.isFinite(numeric)) {
+    return;
+  }
+  pendingPhraseStartAnchorQuarters = numeric;
+}
+
+function consumePendingPhraseStartAnchor() {
+  if (!Number.isFinite(pendingPhraseStartAnchorQuarters)) {
+    return Number.NaN;
+  }
+  var anchor = pendingPhraseStartAnchorQuarters;
+  pendingPhraseStartAnchorQuarters = Number.NaN;
+  return anchor;
+}
+
+function setTransportState(epochMs, bpm, revision, serverSentMs) {
+  var nextEpoch = Number(epochMs);
+  var nextBpm = Number(bpm);
+  var nextRevision = normalizeTransportRevision(revision);
+  var nextServerSent = Number(serverSentMs);
+  if (!Number.isFinite(nextEpoch) || !Number.isFinite(nextBpm) || nextBpm <= 0) {
+    return;
+  }
+  var knownRevision = highestKnownTransportRevision();
+  if (Number.isFinite(nextRevision) && nextRevision < knownRevision) {
+    return;
+  }
+  if (!Number.isFinite(nextRevision) && pendingTransportState) {
+    return;
+  }
+
+  if (Number.isFinite(nextServerSent) && !hasClockSync) {
+    // Fast bootstrap before RTT-based SYNC stabilizes: estimate offset from
+    // server send timestamp carried by TRANSPORT.
+    serverClockOffsetMs = nextServerSent - Date.now();
+  }
+
+  var shouldDefer =
+    !!playbarAnimationFrame &&
+    Number.isFinite(transportEpochMs) &&
+    Number.isFinite(nextRevision) &&
+    nextRevision > transportRevision;
+  if (shouldDefer) {
+    queuePendingTransportState(nextEpoch, nextBpm, nextRevision, nextServerSent);
+    return;
+  }
+
+  pendingTransportState = null;
+  applyTransportStateNow(nextEpoch, nextBpm, nextRevision);
 }
 
 function applyClockSyncSample(clientSentMs, serverMs, clientReceivedMs) {
@@ -522,6 +606,11 @@ window.setServerMessageTime = setServerMessageTime;
 window.applyClockSyncSample = applyClockSyncSample;
 window.setTransportState = setTransportState;
 window.setTempoLevels = setTempoLevels;
+window.applyPendingTransportState = applyPendingTransportState;
+window.hasPendingTransportState = hasPendingTransportState;
+window.hasAuthoritativeTransportClock = hasAuthoritativeTransportClock;
+window.setPendingPhraseStartAnchor = setPendingPhraseStartAnchor;
+window.consumePendingPhraseStartAnchor = consumePendingPhraseStartAnchor;
 
 function setMetronomeLedOn(ledId, isOn) {
   var led = document.getElementById(ledId);
@@ -662,6 +751,11 @@ function startPhraseSwapAnimation(nowMs) {
   var startMs = Number(nowMs) || serverNowMs();
   var quarterMs = 60000 / Math.max(tempo, 1e-6);
   var durationMs = Math.max(120, quarterMs * 0.5); // blue -> next red beat
+  if (!Number.isFinite(pendingPhraseStartAnchorQuarters) && Number.isFinite(transportEpochMs)) {
+    var startAbsoluteQuarters = (startMs - transportEpochMs) * quarterRatePerSecond() / 1000;
+    var projectedQuarterAdvance = durationMs * quarterRatePerSecond() / 1000;
+    setPendingPhraseStartAnchor(startAbsoluteQuarters + projectedQuarterAdvance);
+  }
   var previewSvg = phrasePreviewSvg;
 
   function step() {
@@ -811,6 +905,7 @@ function stopPlaybarMotion() {
     applyScoreSvgTranslate(phrasePreviewSvg, -phrasePreviewOffsetY);
   }
   resetMetronome();
+  applyPendingTransportState();
 }
 
 function normalizeHorizontalSpan(leftX, rightX) {

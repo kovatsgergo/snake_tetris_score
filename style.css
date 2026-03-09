@@ -65,12 +65,36 @@ h2 {
     gap: 14px;
 }
 
+.tacet-banner {
+    font-size: 2.2em;
+    font-weight: bold;
+    letter-spacing: 0.15em;
+    color: #666;
+    margin-right: 16px;
+    display: inline-block;
+    width: 190px;
+    line-height: 1;
+}
+
+.tacet-banner-hidden {
+    visibility: hidden;
+}
+
+.bpm-value {
+    display: inline-block;
+    width: 90px;
+    text-align: left;
+    font-variant-numeric: tabular-nums;
+}
+
 .met-beat-index {
     font-size: 46px;
     line-height: 1;
-    min-width: 36px;
+    min-width: 46px;
+    width: 46px;
     display: inline-block;
     text-align: center;
+    font-variant-numeric: tabular-nums;
 }
 
 .met-led {
@@ -117,4 +141,42 @@ h2 {
     -ms-transform: translateX(100%);
     -o-transform: translateX(100%);
     transform: translateX(100%);
+}
+
+.panel7 {
+    box-sizing: border-box;
+    width: min(calc(100vw - 16px), 1240px);
+    margin: 8px auto;
+}
+
+.panel7 #control3 {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.panel7 p {
+    overflow-wrap: anywhere;
+}
+
+.debug-controls-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+}
+
+.score-footer-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+}
+
+.score-footer-row #dynCanvas {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
 }

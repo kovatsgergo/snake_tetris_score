@@ -188,7 +188,11 @@ function setTacetSet(payload) {
 function updateTacetBanner(show) {
   var banner = document.getElementById('tacetBanner');
   if (!banner) return;
-  banner.style.display = show ? 'inline' : 'none';
+  if (show) {
+    banner.classList.remove('tacet-banner-hidden');
+  } else {
+    banner.classList.add('tacet-banner-hidden');
+  }
 }
 
 function applyTacetSingleStaffOverlay(svg, staffIndex) {
@@ -2110,6 +2114,17 @@ function drawAndAnimatePlaybarTimeMapped(
   var lastCycleIndex = null;
   var phrasePhaseAnchorQuarters = null;
 
+  function setUpcomingPhraseStartAnchor(anchorQuarters) {
+    if (typeof setPendingPhraseStartAnchor !== 'function') {
+      return;
+    }
+    var numeric = Number(anchorQuarters);
+    if (!Number.isFinite(numeric)) {
+      return;
+    }
+    setPendingPhraseStartAnchor(numeric);
+  }
+
   function requestSnakeForCycle() {
     if (snakeRequestedForCycle) {
       return;
@@ -2138,13 +2153,15 @@ function drawAndAnimatePlaybarTimeMapped(
     playbarAnimationFrame = requestAnimationFrame(step);
   }
 
-  function handleCycleBoundary(now, totalQuarterBeats) {
+  function handleCycleBoundary(now, totalQuarterBeats, boundaryAnchorQuarters) {
     requestSnakeForCycle();
     refreshMetronomeVisual(now);
     setBeatIndexDisplay(totalQuarterBeats, totalQuarterBeats);
     // Fallback: if swap wasn't triggered early (e.g. very short phrase), start it now.
     if (!phraseSwapInProgress && phrasePreviewAwaitingSwap) {
-      startPhraseSwapAnimation(now);
+      if (startPhraseSwapAnimation(now)) {
+        setUpcomingPhraseStartAnchor(boundaryAnchorQuarters);
+      }
     }
     if (phraseSwapInProgress || phrasePreviewAwaitingSwap) {
       playbarAnimationFrame = 0;
@@ -2159,6 +2176,9 @@ function drawAndAnimatePlaybarTimeMapped(
       return true;
     }
     snakeRequestedForCycle = false;
+    if (typeof applyPendingTransportState === 'function') {
+      applyPendingTransportState();
+    }
     // Flush any dynamics update that arrived mid-phrase.
     redrawDynamicsOnly();
     return false;
@@ -2189,10 +2209,17 @@ function drawAndAnimatePlaybarTimeMapped(
     }
 
     if (!Number.isFinite(phrasePhaseAnchorQuarters)) {
+      var pendingAnchor = (typeof consumePendingPhraseStartAnchor === 'function')
+        ? Number(consumePendingPhraseStartAnchor())
+        : Number.NaN;
+      if (Number.isFinite(pendingAnchor)) {
+        phrasePhaseAnchorQuarters = pendingAnchor;
+      } else {
       // Snap to the start of the current phrase cycle using the globally-shared
       // absoluteQuarters, so all windows compute the same anchor regardless of
       // when they first start rendering.
-      phrasePhaseAnchorQuarters = Math.floor(absoluteQuarters / safeNumQuarters) * safeNumQuarters;
+        phrasePhaseAnchorQuarters = Math.floor(absoluteQuarters / safeNumQuarters) * safeNumQuarters;
+      }
     }
 
     phraseQuarters = absoluteQuarters - phrasePhaseAnchorQuarters;
@@ -2213,7 +2240,8 @@ function drawAndAnimatePlaybarTimeMapped(
     if (lastCycleIndex === null) {
       lastCycleIndex = cycleIndex;
     } else if (cycleIndex > lastCycleIndex) {
-      if (handleCycleBoundary(now, totalQuarterBeats)) {
+      var boundaryAnchorQuarters = phrasePhaseAnchorQuarters + cycleIndex * safeNumQuarters;
+      if (handleCycleBoundary(now, totalQuarterBeats, boundaryAnchorQuarters)) {
         return;
       }
       lastCycleIndex = cycleIndex;
@@ -2237,7 +2265,9 @@ function drawAndAnimatePlaybarTimeMapped(
       progressedQuarters >= safeNumQuarters - 0.5
     ) {
       swapTriggeredThisCycle = true;
-      startPhraseSwapAnimation(now);
+      if (startPhraseSwapAnimation(now)) {
+        setUpcomingPhraseStartAnchor(phrasePhaseAnchorQuarters + (cycleIndex + 1) * safeNumQuarters);
+      }
     }
 
     var currentQuarter = fromQuarter + progressedQuarters;

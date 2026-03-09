@@ -132,31 +132,10 @@ function setSnakeCoordinates(message) {
 
   snakeSnapshotVersion++;
   if (pendingEatenRender) {
-    // After eaten, wait for a fresher snake snapshot before rendering.
     if (snakeSnapshotVersion >= renderWaitSnakeVersion) {
-      renderMusicFromSnake();
+      clearEatenRenderPendingState();
     }
-    return;
   }
-
-  // Legacy loop behavior: every snake packet refreshes render/playbar,
-  // while passage content stays latched until the next eaten-sync update.
-  if (phraseSwapInProgress) {
-    // Keep current phrase untouched until preview swap finishes.
-    return;
-  }
-  if (phrasePreviewAwaitingSwap) {
-    // If preview is waiting but playback loop already stopped, kick off the
-    // pending swap so metronome/highlight can continue on the committed phrase.
-    ensurePreviewSwapProgress(serverNowMs());
-    return;
-  }
-  if (playbarAnimationFrame) {
-    // Phrase content is driven only by eating events; ignore mid-phrase snake
-    // position updates so the phrase loops until the next eaten event.
-    return;
-  }
-  renderMusicFromSnake();
 }
 
 var currentTacetCount = 0;
@@ -185,32 +164,40 @@ function setTacetSet(payload) {
   currentTacetCount = currentTacetSet.length;
 }
 
-function applyTacetConductorOverlays(svg, staffBands) {
-  if (!svg) return;
-  var oldOverlays = svg.querySelectorAll('.tacet-overlay');
-  for (var n = 0; n < oldOverlays.length; n++) oldOverlays[n].parentNode.removeChild(oldOverlays[n]);
-  if (!currentTacetSet.length || !staffBands.length) return;
-  var vbRaw = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
-  var vbX = Number.isFinite(vbRaw[0]) ? vbRaw[0] : 0;
-  var vbW = Number.isFinite(vbRaw[2]) ? vbRaw[2] : 900;
-  for (var i = 0; i < staffBands.length; i++) {
-    if (currentTacetSet.indexOf(i) === -1) continue;
-    var band = staffBands[i];
-    var bandTop = band.topY - 14;
-    var bandBottom = band.bottomY + 14;
-    var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('class', 'tacet-overlay');
-    rect.setAttribute('x', String(vbX));
-    rect.setAttribute('y', String(bandTop));
-    rect.setAttribute('width', String(vbW));
-    rect.setAttribute('height', String(Math.max(1, bandBottom - bandTop)));
-    rect.setAttribute('fill', 'rgba(255,255,255,0.55)');
-    rect.setAttribute('stroke', 'none');
-    svg.appendChild(rect);
+function updateTacetBanner(show) {
+  var banner = document.getElementById('tacetBanner');
+  if (!banner) return;
+  if (show) {
+    banner.classList.remove('tacet-banner-hidden');
+  } else {
+    banner.classList.add('tacet-banner-hidden');
   }
 }
 
-// Override: in this variant eaten triggers quarter extraction and notation display.
+function applyTacetSingleStaffOverlay(svg, staffIndex) {
+  if (!svg) return;
+  var oldOverlays = svg.querySelectorAll('.tacet-overlay');
+  for (var n = 0; n < oldOverlays.length; n++) oldOverlays[n].parentNode.removeChild(oldOverlays[n]);
+  var isTacet = currentTacetSet.indexOf(Number(staffIndex)) !== -1;
+  updateTacetBanner(isTacet);
+  if (!isTacet) return;
+  var vbRaw = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
+  var vbX = Number.isFinite(vbRaw[0]) ? vbRaw[0] : 0;
+  var vbY = Number.isFinite(vbRaw[1]) ? vbRaw[1] : 0;
+  var vbW = Number.isFinite(vbRaw[2]) ? vbRaw[2] : 900;
+  var vbH = Number.isFinite(vbRaw[3]) ? vbRaw[3] : 200;
+  var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('class', 'tacet-overlay');
+  rect.setAttribute('x', String(vbX));
+  rect.setAttribute('y', String(vbY));
+  rect.setAttribute('width', String(vbW));
+  rect.setAttribute('height', String(vbH));
+  rect.setAttribute('fill', 'rgba(255,255,255,0.55)');
+  rect.setAttribute('stroke', 'none');
+  svg.appendChild(rect);
+}
+
+// Keep eaten for diagnostics/transposition hints; phrase timing comes from ROOM_STATE.
 function setEaten(message) {
   var raw = String(message || '').trim();
   var rawTokens = raw.length > 0 ? raw.split(/\s+/) : [];
@@ -238,25 +225,6 @@ function setEaten(message) {
     transposeSemitones = clampTransposeSemitones(hueBin + ((typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6));
     syncTransposeInputControl();
   }
-
-  pendingEatenRender = true;
-  // Wait for a newer snake snapshot than the currently known one.
-  renderWaitSnakeVersion = snakeSnapshotVersion + 1;
-
-  // Proactively request a fresh snake state from the game side.
-  if (typeof wsSend === 'function') {
-    wsSend('snake');
-  }
-
-  // Fallback in case the fresh snapshot is delayed/lost.
-  if (eatenRenderFallbackTimer) {
-    clearTimeout(eatenRenderFallbackTimer);
-  }
-  eatenRenderFallbackTimer = setTimeout(function () {
-    if (pendingEatenRender) {
-      renderMusicFromSnake();
-    }
-  }, EATEN_RENDER_FALLBACK_MS);
 }
 
 function setInitialState(eatenPayload, snakePayload) {
@@ -280,8 +248,137 @@ function setInitialState(eatenPayload, snakePayload) {
   // Apply snake coordinates directly
   snake = String(snakePayload || '').trim().split(/\s+/).map(Number);
   snakeSnapshotVersion++;
-  // Render immediately — no pendingEatenRender, no live snake request
-  renderMusicFromSnake();
+}
+
+function parseRoomStatePhraseDescriptor(fromValue, numValue, transposeValue) {
+  var fromQuarter = Number(fromValue);
+  var numQuarters = Number(numValue);
+  var transpose = Number(transposeValue);
+  if (!Number.isFinite(fromQuarter) || !Number.isFinite(numQuarters) || numQuarters <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(transpose)) {
+    transpose = 0;
+  }
+  if (tannhauserScore && typeof tannhauserScore.getTotalQuarters === 'function') {
+    var totalQ = Number(tannhauserScore.getTotalQuarters(selectedStaff()));
+    if (Number.isFinite(totalQ) && totalQ > 0) {
+      fromQuarter = applyScoreLoopMode(fromQuarter, totalQ);
+      numQuarters = Math.max(1, Math.min(numQuarters, Math.floor(totalQ)));
+      var safeNum = Math.max(1, Math.floor(numQuarters));
+      var maxStart = Math.max(0, Math.floor(totalQ) - safeNum);
+      fromQuarter = Math.max(0, Math.min(Math.floor(fromQuarter), maxStart));
+    }
+  }
+  return {
+    fromQuarter: Math.floor(fromQuarter),
+    numQuarters: Math.max(1, Math.floor(numQuarters)),
+    transposeSemitones: Math.floor(transpose),
+  };
+}
+
+function resolveRoomStateTransposeValue(serverTranspose) {
+  if (typeof autoTransposeEnabled !== 'undefined' && !autoTransposeEnabled) {
+    return clampTransposeSemitones(transposeSemitones);
+  }
+  return serverTranspose;
+}
+
+function resolveRoomStateFromQuarterValue(serverFromQuarter) {
+  if (typeof autoFromQuarterEnabled !== 'undefined' && !autoFromQuarterEnabled) {
+    var manualFrom = Number(debugOverrideFromQuarter);
+    if (Number.isFinite(manualFrom)) {
+      return Math.max(0, Math.floor(manualFrom));
+    }
+  }
+  return serverFromQuarter;
+}
+
+function resolveRoomStateNumQuartersValue(serverNumQuarters) {
+  if (typeof autoNumQuartersEnabled !== 'undefined' && !autoNumQuartersEnabled) {
+    var manualNum = Number(debugOverrideNumQuarters);
+    if (Number.isFinite(manualNum) && manualNum > 0) {
+      return Math.max(1, Math.floor(manualNum));
+    }
+  }
+  return serverNumQuarters;
+}
+
+function readRoomStateCurrentPhrase() {
+  if (!roomStateSnapshot) {
+    return null;
+  }
+  return parseRoomStatePhraseDescriptor(
+    resolveRoomStateFromQuarterValue(roomStateSnapshot.currentFrom),
+    resolveRoomStateNumQuartersValue(roomStateSnapshot.currentNum),
+    resolveRoomStateTransposeValue(roomStateSnapshot.currentTranspose)
+  );
+}
+
+function readRoomStateCandidatePhrase() {
+  if (!roomStateSnapshot) {
+    return null;
+  }
+  var candidate = parseRoomStatePhraseDescriptor(
+    resolveRoomStateFromQuarterValue(roomStateSnapshot.candidateFrom),
+    resolveRoomStateNumQuartersValue(roomStateSnapshot.candidateNum),
+    resolveRoomStateTransposeValue(roomStateSnapshot.candidateTranspose)
+  );
+  if (!candidate) {
+    return null;
+  }
+  if (candidate.fromQuarter < 0) {
+    return null;
+  }
+  return candidate;
+}
+
+function phraseDescriptorEqualsSnapshot(descriptor, snapshot) {
+  if (!descriptor || !snapshot) {
+    return false;
+  }
+  return (
+    Number(descriptor.fromQuarter) === Number(snapshot.fromQuarter) &&
+    Number(descriptor.numQuarters) === Number(snapshot.numQuarters) &&
+    Number(descriptor.transposeSemitones) === Number(snapshot.transposeSemitones)
+  );
+}
+
+function phraseDescriptorsEqual(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+  return (
+    Number(a.fromQuarter) === Number(b.fromQuarter) &&
+    Number(a.numQuarters) === Number(b.numQuarters) &&
+    Number(a.transposeSemitones) === Number(b.transposeSemitones)
+  );
+}
+
+async function syncAuthoritativeCandidatePreview(currentDescriptor) {
+  if (phraseSwapInProgress) {
+    return false;
+  }
+  var candidateDescriptor = readRoomStateCandidatePhrase();
+  if (!candidateDescriptor || phraseDescriptorsEqual(currentDescriptor, candidateDescriptor)) {
+    removePhrasePreviewOverlay(false);
+    return false;
+  }
+  if (phraseDescriptorEqualsSnapshot(candidateDescriptor, phrasePreviewSnapshot)) {
+    return true;
+  }
+  var previousTranspose = transposeSemitones;
+  transposeSemitones = candidateDescriptor.transposeSemitones;
+  var candidateSnapshot = buildPhraseSnapshot(
+    candidateDescriptor.fromQuarter,
+    candidateDescriptor.numQuarters,
+    selectedStaff()
+  );
+  transposeSemitones = previousTranspose;
+  if (!candidateSnapshot) {
+    return false;
+  }
+  return showPhrasePreview(candidateSnapshot);
 }
 
 async function loadTannhauserMxl() {
@@ -357,9 +454,7 @@ async function loadTannhauserMxl() {
       wsSend('STAFFCOUNT ' + tannhauserScore.getStaffCount());
     }
 
-    if (pendingEatenRender) {
-      renderMusicFromSnake();
-    }
+    renderMusicFromSnake();
   } catch (error) {
     setDebugStatus('MXL load/parse error: ' + error.message);
   }
@@ -395,7 +490,10 @@ function clearScore(options) {
     container.style.position = 'relative';
     container.style.overflow = 'hidden';
     container.style.textAlign = 'left';
-    container.style.width = full_Width + 'px';
+    container.style.width = '100%';
+    container.style.maxWidth = full_Width + 'px';
+    container.style.margin = '0 auto';
+    container.style.boxSizing = 'border-box';
     container.style.height = full_Height + 'px';
   }
   osmdLayout.svg = null;
@@ -446,20 +544,20 @@ function applyFixedScoreSvgStyle(svg) {
     return;
   }
   // Keep engraving size fixed by explicit pixel scaling from viewBox.
-  // Do not stretch to canvas dimensions.
+  // Let CSS scale down responsively on smaller viewports.
   var vbRaw = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
   var vbWidth = vbRaw.length >= 3 && Number.isFinite(vbRaw[2]) ? vbRaw[2] : null;
   var vbHeight = vbRaw.length >= 4 && Number.isFinite(vbRaw[3]) ? vbRaw[3] : null;
   var fixedScale = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
   if (Number.isFinite(vbWidth) && vbWidth > 0 && Number.isFinite(vbHeight) && vbHeight > 0) {
     svg.style.width = (vbWidth * fixedScale).toFixed(3) + 'px';
-    svg.style.height = (vbHeight * fixedScale).toFixed(3) + 'px';
+    svg.style.height = 'auto';
   } else {
     svg.style.width = 'auto';
     svg.style.height = 'auto';
   }
-  svg.style.maxWidth = 'none';
-  svg.style.maxHeight = 'none';
+  svg.style.maxWidth = '100%';
+  svg.style.maxHeight = '100%';
   svg.style.display = 'block';
   svg.style.margin = '0';
   svg.style.pointerEvents = 'none';
@@ -478,52 +576,6 @@ function osmdDisableMultiRestGeneration(osmd) {
   if ('AutoGenerateMutipleRestMeasuresFromRestMeasures' in rules) {
     rules.AutoGenerateMutipleRestMeasuresFromRestMeasures = false;
   }
-}
-
-function osmdApplyConductorSpacingRules(osmd) {
-  if (!osmd || !osmd.EngravingRules) {
-    return;
-  }
-  var cfg = (window && window.SCORE_VIEW_CONFIG) ? window.SCORE_VIEW_CONFIG : {};
-  var rules = osmd.EngravingRules;
-  function setIfPresent(names, value) {
-    var numeric = Number(value);
-    if (!Number.isFinite(numeric)) {
-      return;
-    }
-    names.forEach(function (name) {
-      if (Object.prototype.hasOwnProperty.call(rules, name)) {
-        rules[name] = numeric;
-      }
-    });
-  }
-
-  setIfPresent([
-    'StaffDistance',
-    'staffDistance',
-    'MinimumDistanceBetweenStaves',
-    'MinimumDistanceBetweenStaffs',
-    'DistanceBetweenStaves',
-  ], cfg.conductorStaffDistance);
-
-  setIfPresent([
-    'BetweenStaffDistance',
-    'betweenStaffDistance',
-    'DistanceBetweenStaffLines',
-    'DistanceBetweenStaffs',
-  ], cfg.conductorBetweenStaffDistance);
-
-  setIfPresent([
-    'MinimumStaffLineDistance',
-    'minimumStaffLineDistance',
-    'MinStaffLineDistance',
-  ], cfg.conductorMinimumStaffLineDistance);
-
-  setIfPresent([
-    'BetweenStaffLinesDistance',
-    'betweenStaffLinesDistance',
-    'StaffHeightOffset',
-  ], cfg.conductorBetweenStaffLinesDistance);
 }
 
 function osmdParseKeyToPitch(key) {
@@ -578,6 +630,9 @@ function osmdQuarterLengthToTimeSignature(quarterLength) {
 }
 
 // Compute per-measure clef changes (bass <-> treble) for staves that start in bass clef.
+// Uses the transposed events so the sounding pitch determines the clef.
+// Rule: switch to treble when measure median pitch >= E4 (MIDI 64);
+// switch back to bass when <= A3 (MIDI 57); hysteresis band stays on current clef.
 function computeAutoClefChanges(events, barlinesQ, fromQuarter, numQuarters) {
   var TREBLE = { sign: 'G', line: 2 };
   var BASS   = { sign: 'F', line: 4 };
@@ -615,7 +670,7 @@ function computeAutoClefChanges(events, barlinesQ, fromQuarter, numQuarters) {
       } else if (median <= BASS_THRESHOLD) {
         targetClef = BASS;
       } else {
-        targetClef = currentClef;
+        targetClef = currentClef; // hysteresis band: keep current
       }
     }
 
@@ -1089,6 +1144,7 @@ function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, key
       previousTimeSig.beats !== timeSig.beats ||
       previousTimeSig.beatType !== timeSig.beatType);
 
+    // Determine clef for this measure from clefChanges array or fall back to single clef.
     var EPS_CLEF = 1e-6;
     var clefForThisMeasure = null;
     if (Array.isArray(clefChanges) && clefChanges.length) {
@@ -1099,7 +1155,7 @@ function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, key
         }
       }
     } else if (m === 0) {
-      clefForThisMeasure = clef;
+      clefForThisMeasure = clef; // no clefChanges: emit single clef at measure 0
     }
     var clefChanged = clefForThisMeasure !== null;
     var includeAttributes = (m === 0) || keyChanged || timeChanged || clefChanged;
@@ -1245,76 +1301,6 @@ function osmdBuildSliceMusicXml(events, fromQuarter, numQuarters, barlinesQ, key
   };
 }
 
-function osmdExtractSinglePartBody(singlePartXml) {
-  var xml = String(singlePartXml || '');
-  var match = xml.match(/<part id="P1">([\s\S]*?)<\/part>/i);
-  return match ? match[1] : '';
-}
-
-function osmdBuildConductorSliceMusicXml(staffSlices, fromQuarter, numQuarters, barlinesQ) {
-  var slices = Array.isArray(staffSlices) ? staffSlices : [];
-  if (!slices.length) {
-    return {
-      xml: '',
-      timeSignatureStartsQ: [],
-    };
-  }
-
-  var partListXml = [];
-  var partsXml = [];
-  var referenceTimeSigStarts = [];
-
-  for (var i = 0; i < slices.length; i++) {
-    var slice = slices[i] || {};
-    var partId = 'P' + (i + 1);
-    var staffName = String(slice.staffName || ('Staff ' + (i + 1)));
-    var single = osmdBuildSliceMusicXml(
-      Array.isArray(slice.events) ? slice.events : [],
-      fromQuarter,
-      numQuarters,
-      barlinesQ || [],
-      Array.isArray(slice.keyChanges) && slice.keyChanges.length ? slice.keyChanges : [{ q: fromQuarter, fifths: 0 }],
-      staffName,
-      slice.clef || null,
-      slice.clefChanges || null
-    );
-    var partBody = osmdExtractSinglePartBody(single && single.xml ? single.xml : '');
-    if (!partBody) {
-      continue;
-    }
-    partListXml.push(
-      '<score-part id="' + osmdEscapeXml(partId) + '">' +
-      '<part-name>' + osmdEscapeXml(staffName) + '</part-name>' +
-      '</score-part>'
-    );
-    partsXml.push('<part id="' + osmdEscapeXml(partId) + '">' + partBody + '</part>');
-    if (!referenceTimeSigStarts.length && Array.isArray(single.timeSignatureStartsQ)) {
-      referenceTimeSigStarts = single.timeSignatureStartsQ.slice();
-    }
-  }
-
-  if (!partsXml.length) {
-    return {
-      xml: '',
-      timeSignatureStartsQ: [],
-    };
-  }
-
-  return {
-    xml: [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">',
-      '<score-partwise version="3.1">',
-      '<part-list>',
-      partListXml.join(''),
-      '</part-list>',
-      partsXml.join(''),
-      '</score-partwise>',
-    ].join(''),
-    timeSignatureStartsQ: referenceTimeSigStarts,
-  };
-}
-
 function osmdParsePathLineSegment(pathD) {
   var text = String(pathD || '').trim();
   var match = text.match(/^M\s*([\-\d\.]+)\s+([\-\d\.]+)\s*L\s*([\-\d\.]+)\s+([\-\d\.]+)/i);
@@ -1444,113 +1430,6 @@ function osmdDetectLayout(svgEl) {
   };
 }
 
-function osmdDetectConductorLayout(svgEl) {
-  var fallback = osmdDetectLayout(svgEl);
-  if (!svgEl) {
-    return { layout: fallback, staffBands: [] };
-  }
-
-  var horizontalSegments = [];
-  Array.prototype.forEach.call(svgEl.querySelectorAll('path'), function (pathEl) {
-    var seg = osmdParsePathLineSegment(pathEl.getAttribute('d'));
-    if (!seg) {
-      return;
-    }
-    var dy = Math.abs(seg.y2 - seg.y1);
-    var span = Math.abs(seg.x2 - seg.x1);
-    if (dy > 0.25 || span < 40) {
-      return;
-    }
-    horizontalSegments.push({
-      y: (seg.y1 + seg.y2) / 2,
-      xLeft: Math.min(seg.x1, seg.x2),
-      xRight: Math.max(seg.x1, seg.x2),
-      span: span,
-    });
-  });
-
-  if (horizontalSegments.length < 10) {
-    return { layout: fallback, staffBands: [] };
-  }
-
-  horizontalSegments.sort(function (a, b) { return a.y - b.y; });
-  var mergedRows = [];
-  horizontalSegments.forEach(function (seg) {
-    var last = mergedRows.length ? mergedRows[mergedRows.length - 1] : null;
-    if (last && Math.abs(last.y - seg.y) <= 0.8) {
-      var count = Number(last._count || 1);
-      last.y = (last.y * count + seg.y) / (count + 1);
-      last._count = count + 1;
-      last.xLeft = Math.min(last.xLeft, seg.xLeft);
-      last.xRight = Math.max(last.xRight, seg.xRight);
-      last.span = Math.max(last.span, seg.span);
-      return;
-    }
-    mergedRows.push({
-      y: seg.y,
-      xLeft: seg.xLeft,
-      xRight: seg.xRight,
-      span: seg.span,
-      _count: 1,
-    });
-  });
-
-  var rows = mergedRows.map(function (row) {
-    return {
-      y: row.y,
-      xLeft: row.xLeft,
-      xRight: row.xRight,
-      span: row.span,
-    };
-  });
-  if (rows.length < 10) {
-    return { layout: fallback, staffBands: [] };
-  }
-
-  var staffBands = [];
-  for (var i = 0; i <= rows.length - 5; i++) {
-    var candidate = rows.slice(i, i + 5);
-    var minSpan = Math.min.apply(null, candidate.map(function (row) { return row.span; }));
-    if (!Number.isFinite(minSpan) || minSpan < 120) {
-      continue;
-    }
-    var d1 = candidate[1].y - candidate[0].y;
-    var d2 = candidate[2].y - candidate[1].y;
-    var d3 = candidate[3].y - candidate[2].y;
-    var d4 = candidate[4].y - candidate[3].y;
-    var avg = (d1 + d2 + d3 + d4) / 4;
-    if (avg < 4 || avg > 20) {
-      continue;
-    }
-    staffBands.push({
-      topY: candidate[0].y,
-      bottomY: candidate[4].y,
-      leftX: Math.min.apply(null, candidate.map(function (row) { return row.xLeft; })),
-      rightX: Math.max.apply(null, candidate.map(function (row) { return row.xRight; })),
-    });
-    i += 4;
-  }
-
-  if (!staffBands.length) {
-    return { layout: fallback, staffBands: [] };
-  }
-
-  staffBands.sort(function (a, b) {
-    return a.topY - b.topY;
-  });
-
-  var layout = {
-    staffLeftX: Math.min.apply(null, staffBands.map(function (band) { return band.leftX; })),
-    staffRightX: Math.max.apply(null, staffBands.map(function (band) { return band.rightX; })),
-    leftX: Math.min.apply(null, staffBands.map(function (band) { return band.leftX; })),
-    rightX: Math.max.apply(null, staffBands.map(function (band) { return band.rightX; })),
-    topY: staffBands[0].topY,
-    bottomY: staffBands[staffBands.length - 1].bottomY,
-  };
-
-  return { layout: layout, staffBands: staffBands };
-}
-
 function osmdApplyFullWidthViewBox(svgEl, layout) {
   if (!svgEl || !layout) {
     return;
@@ -1624,53 +1503,6 @@ function osmdSetBaseOffsetForLowEb(svgEl, layout) {
   svgEl.__baseOffsetY = baseOffset;
 }
 
-function osmdResolveConductorFirstStaffTopPx() {
-  var cfg = (window && window.SCORE_VIEW_CONFIG) ? window.SCORE_VIEW_CONFIG : {};
-  var target = Number(cfg.conductorFirstStaffTopPx);
-  if (!Number.isFinite(target)) {
-    target = 120;
-  }
-  return Math.max(0, target);
-}
-
-function osmdSetBaseOffsetForConductorFirstStaff(svgEl, layout) {
-  if (!svgEl || !layout) {
-    return;
-  }
-  var vbRaw = String(svgEl.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
-  if (vbRaw.length < 4 || !Number.isFinite(vbRaw[1]) || !Number.isFinite(vbRaw[3]) || vbRaw[3] <= 0) {
-    svgEl.__baseOffsetY = 0;
-    return;
-  }
-  var topY = Number(layout.topY);
-  var bottomY = Number(layout.bottomY);
-  if (!Number.isFinite(topY) || !Number.isFinite(bottomY) || bottomY <= topY) {
-    svgEl.__baseOffsetY = 0;
-    return;
-  }
-
-  var fixedScale = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
-  var topPx = (topY - vbRaw[1]) * fixedScale;
-  var bottomPx = (bottomY - vbRaw[1]) * fixedScale;
-  if (!Number.isFinite(topPx) || !Number.isFinite(bottomPx) || bottomPx <= topPx) {
-    svgEl.__baseOffsetY = 0;
-    return;
-  }
-
-  var targetTopPx = osmdResolveConductorFirstStaffTopPx();
-  var marginBottomPx = 8;
-  var maxOffset = full_Height - marginBottomPx - bottomPx;
-  var baseOffset = targetTopPx - topPx;
-  if (!Number.isFinite(baseOffset)) {
-    baseOffset = 0;
-  }
-  baseOffset = Math.max(0, baseOffset);
-  if (Number.isFinite(maxOffset)) {
-    baseOffset = Math.min(baseOffset, maxOffset);
-  }
-  svgEl.__baseOffsetY = baseOffset;
-}
-
 function osmdDedupSortedXs(xs, minDelta) {
   var out = [];
   var delta = Number.isFinite(minDelta) ? Math.max(0.01, minDelta) : 1;
@@ -1731,100 +1563,25 @@ function osmdDetectTimeSignatureBoxes(svgEl) {
   if (!svgEl) {
     return [];
   }
-  var rawBoxes = [];
-  Array.prototype.forEach.call(svgEl.querySelectorAll('.vf-timesignature'), function (el) {
-    var box = osmdGetGlobalBBox(el);
-    if (!box || !Number.isFinite(box.x) || !Number.isFinite(box.width)) {
-      try {
-        box = el.getBBox();
-      } catch (_error) {
-        box = null;
+  var boxes = [];
+  Array.prototype.forEach.call(svgEl.querySelectorAll('g.vf-timesignature'), function (el) {
+    try {
+      var box = el.getBBox();
+      if (!box || !Number.isFinite(box.x) || !Number.isFinite(box.width)) {
+        return;
       }
+      boxes.push({
+        left: Number(box.x),
+        right: Number(box.x + box.width),
+      });
+    } catch (_error) {
+      // Ignore getBBox failures.
     }
-    if (!box || !Number.isFinite(box.x) || !Number.isFinite(box.width) || box.width <= 0) {
-      return;
-    }
-    rawBoxes.push({
-      left: Number(box.x),
-      right: Number(box.x + box.width),
-    });
   });
-  if (!rawBoxes.length) {
-    return [];
-  }
-  rawBoxes.sort(function (a, b) {
+  boxes.sort(function (a, b) {
     return a.left - b.left;
   });
-  var merged = [];
-  rawBoxes.forEach(function (box) {
-    var left = Number(box.left);
-    var right = Number(box.right);
-    if (!Number.isFinite(left) || !Number.isFinite(right) || right <= left) {
-      return;
-    }
-    var last = merged.length ? merged[merged.length - 1] : null;
-    if (!last || left > last.right + 1.5) {
-      merged.push({ left: left, right: right });
-      return;
-    }
-    last.left = Math.min(last.left, left);
-    last.right = Math.max(last.right, right);
-  });
-  return merged;
-}
-
-function osmdDetectInitialAttributeRightX(svgEl, staffBand, layout, firstOnsetXHint) {
-  if (!svgEl) {
-    return Number.NaN;
-  }
-  var bandTop = Number(staffBand && staffBand.topY);
-  var bandBottom = Number(staffBand && staffBand.bottomY);
-  var hasBand = Number.isFinite(bandTop) && Number.isFinite(bandBottom) && bandBottom > bandTop;
-  var staffLeft = Number(layout && layout.staffLeftX);
-  var staffRight = Number(layout && layout.staffRightX);
-  var searchRightLimit = Number.POSITIVE_INFINITY;
-  if (Number.isFinite(staffLeft) && Number.isFinite(staffRight) && staffRight > staffLeft) {
-    searchRightLimit = staffLeft + (staffRight - staffLeft) * 0.35;
-  }
-  var onsetHintX = Number(firstOnsetXHint);
-  var attributeRightLimit = searchRightLimit;
-  if (Number.isFinite(onsetHintX)) {
-    attributeRightLimit = Math.min(attributeRightLimit, onsetHintX + 0.5);
-  }
-
-  var rightMost = Number.NaN;
-  var selectors = ['.vf-clef', '.vf-keysignature', '.vf-timesignature'];
-  selectors.forEach(function (selector) {
-    Array.prototype.forEach.call(svgEl.querySelectorAll(selector), function (el) {
-      var box = osmdGetGlobalBBox(el);
-      if (!box) {
-        return;
-      }
-      var left = Number(box.x);
-      var right = Number(box.x + box.width);
-      var top = Number(box.y);
-      var bottom = Number(box.y + box.height);
-      if (!Number.isFinite(left) || !Number.isFinite(right) || right <= left) {
-        return;
-      }
-      if (left > attributeRightLimit) {
-        return;
-      }
-      if (hasBand) {
-        if (!Number.isFinite(top) || !Number.isFinite(bottom)) {
-          return;
-        }
-        if (bottom < bandTop - 8 || top > bandBottom + 8) {
-          return;
-        }
-      }
-      if (!Number.isFinite(rightMost) || right > rightMost) {
-        rightMost = right;
-      }
-    });
-  });
-
-  return rightMost;
+  return boxes;
 }
 
 function osmdBuildTimeSignatureBoundsByQuarter(timeSignatureStartsQ, timeSigBoxes) {
@@ -1865,37 +1622,6 @@ function osmdUniqueOnsetQuarters(sliceEvents, fromQuarter, numQuarters) {
   return out;
 }
 
-function osmdBuildBeatExactOnsetSample(onsetAnchorMap) {
-  var sampleByQ = new Map();
-  if (!(onsetAnchorMap instanceof Map) || onsetAnchorMap.size === 0) {
-    return [];
-  }
-  onsetAnchorMap.forEach(function (x, key) {
-    var q = Number(key);
-    var nx = Number(x);
-    if (!Number.isFinite(q) || !Number.isFinite(nx)) {
-      return;
-    }
-    if (Math.abs(q - Math.round(q)) > 1e-3) {
-      return;
-    }
-    var snappedQ = Math.round(q);
-    var snappedKey = quarterKey(snappedQ);
-    if (!sampleByQ.has(snappedKey) || nx < Number(sampleByQ.get(snappedKey))) {
-      sampleByQ.set(snappedKey, nx);
-    }
-  });
-  return Array.from(sampleByQ.entries())
-    .map(function (entry) {
-      return {
-        q: roundForReport(Number(entry[0])),
-        x: roundForReport(Number(entry[1])),
-      };
-    })
-    .filter(function (entry) { return Number.isFinite(entry.q) && Number.isFinite(entry.x); })
-    .sort(function (a, b) { return a.q - b.q; });
-}
-
 function normalizeQuarterBoundary(q) {
   var n = Number(q);
   if (!Number.isFinite(n)) {
@@ -1908,113 +1634,7 @@ function normalizeQuarterBoundary(q) {
   return n;
 }
 
-function osmdGetGlobalBBox(el) {
-  if (!el) {
-    return null;
-  }
-  var ownerSvg = null;
-  if (typeof el.ownerSVGElement !== 'undefined' && el.ownerSVGElement) {
-    ownerSvg = el.ownerSVGElement;
-  } else if (
-    typeof SVGSVGElement !== 'undefined' &&
-    el instanceof SVGSVGElement
-  ) {
-    ownerSvg = el;
-  }
-
-  if (
-    ownerSvg &&
-    typeof el.getBoundingClientRect === 'function' &&
-    typeof ownerSvg.getScreenCTM === 'function' &&
-    typeof ownerSvg.createSVGPoint === 'function'
-  ) {
-    var screenRect = el.getBoundingClientRect();
-    var ctm = ownerSvg.getScreenCTM();
-    if (
-      screenRect &&
-      ctm &&
-      Number.isFinite(screenRect.left) &&
-      Number.isFinite(screenRect.top) &&
-      Number.isFinite(screenRect.width) &&
-      Number.isFinite(screenRect.height) &&
-      screenRect.width > 0 &&
-      screenRect.height > 0 &&
-      typeof ctm.inverse === 'function'
-    ) {
-      var inv = ctm.inverse();
-      var p1 = ownerSvg.createSVGPoint();
-      var p2 = ownerSvg.createSVGPoint();
-      var p3 = ownerSvg.createSVGPoint();
-      var p4 = ownerSvg.createSVGPoint();
-      p1.x = screenRect.left;
-      p1.y = screenRect.top;
-      p2.x = screenRect.right;
-      p2.y = screenRect.top;
-      p3.x = screenRect.left;
-      p3.y = screenRect.bottom;
-      p4.x = screenRect.right;
-      p4.y = screenRect.bottom;
-      var s1 = p1.matrixTransform(inv);
-      var s2 = p2.matrixTransform(inv);
-      var s3 = p3.matrixTransform(inv);
-      var s4 = p4.matrixTransform(inv);
-      var minX = Math.min(s1.x, s2.x, s3.x, s4.x);
-      var maxX = Math.max(s1.x, s2.x, s3.x, s4.x);
-      var minY = Math.min(s1.y, s2.y, s3.y, s4.y);
-      var maxY = Math.max(s1.y, s2.y, s3.y, s4.y);
-      if (
-        Number.isFinite(minX) &&
-        Number.isFinite(maxX) &&
-        Number.isFinite(minY) &&
-        Number.isFinite(maxY) &&
-        maxX > minX &&
-        maxY > minY
-      ) {
-        return {
-          x: minX,
-          y: minY,
-          width: maxX - minX,
-          height: maxY - minY,
-        };
-      }
-    }
-  }
-
-  if (typeof el.getBBox !== 'function') {
-    return null;
-  }
-  var box;
-  try {
-    box = el.getBBox();
-  } catch (_error) {
-    box = null;
-  }
-  if (!box) {
-    return null;
-  }
-  var x = Number(box.x);
-  var y = Number(box.y);
-  var width = Number(box.width);
-  var height = Number(box.height);
-  if (
-    !Number.isFinite(x) ||
-    !Number.isFinite(y) ||
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
-    width <= 0 ||
-    height <= 0
-  ) {
-    return null;
-  }
-  return {
-    x: x,
-    y: y,
-    width: width,
-    height: height,
-  };
-}
-
-function osmdBuildOnsetAnchorMap(svgEl, sliceEvents, fromQuarter, numQuarters, staffBand) {
+function osmdBuildOnsetAnchorMap(svgEl, sliceEvents, fromQuarter, numQuarters) {
   var map = new Map();
   if (!svgEl) {
     return map;
@@ -2023,429 +1643,25 @@ function osmdBuildOnsetAnchorMap(svgEl, sliceEvents, fromQuarter, numQuarters, s
   if (!onsetQs.length) {
     return map;
   }
-  var bandTop = Number(staffBand && staffBand.topY);
-  var bandBottom = Number(staffBand && staffBand.bottomY);
-  var hasBand = Number.isFinite(bandTop) && Number.isFinite(bandBottom) && bandBottom > bandTop;
-  var bandHeight = hasBand ? Math.max(1, bandBottom - bandTop) : 0;
-  // Allow ledger-line noteheads to remain associated with the owning staff.
-  // Upward transposition can move noteheads further above the staff than below.
-  var bandPaddingTop = Math.max(8, Math.min(42, bandHeight * 1.0));
-  var bandPaddingBottom = Math.max(6, Math.min(24, bandHeight * 0.55));
-  var allGlyphXs = [];
-  var bandGlyphXs = [];
+  var glyphXs = [];
   Array.prototype.forEach.call(svgEl.querySelectorAll('g.vf-stavenote'), function (groupEl) {
-    var box = osmdGetGlobalBBox(groupEl);
+    var box = null;
+    try {
+      box = groupEl.getBBox();
+    } catch (err) {
+      box = null;
+    }
     if (!box || !Number.isFinite(box.x)) {
       return;
     }
-    allGlyphXs.push(box.x);
-    if (!hasBand) {
-      return;
-    }
-    var boxTop = Number(box.y);
-    var boxBottom = Number(box.y + box.height);
-    if (!Number.isFinite(boxTop) || !Number.isFinite(boxBottom)) {
-      return;
-    }
-    if (boxBottom < bandTop - bandPaddingTop || boxTop > bandBottom + bandPaddingBottom) {
-      return;
-    }
-    bandGlyphXs.push(box.x);
+    glyphXs.push(box.x);
   });
-  var glyphXs = hasBand && bandGlyphXs.length ? bandGlyphXs : allGlyphXs;
   glyphXs = osmdDedupSortedXs(glyphXs, 0.5);
   var count = Math.min(onsetQs.length, glyphXs.length);
   for (var i = 0; i < count; i++) {
-    map.set(quarterKey(onsetQs[i]), glyphXs[i]);
+    map.set(String(onsetQs[i]), glyphXs[i]);
   }
   return map;
-}
-
-function osmdBuildBarBoundariesQ(fromQuarter, numQuarters, barlinesQ) {
-  var startQ = Number(fromQuarter);
-  var totalBeats = Math.max(1, Math.ceil(Number(numQuarters) - 1e-9));
-  var endQ = startQ + totalBeats;
-  var boundaries = [startQ];
-  (barlinesQ || []).forEach(function (barQ) {
-    var q = normalizeQuarterBoundary(barQ);
-    if (!Number.isFinite(q) || q <= startQ + 1e-6 || q >= endQ - 1e-6) {
-      return;
-    }
-    boundaries.push(Number(q));
-  });
-  boundaries.push(endQ);
-  boundaries.sort(function (a, b) { return a - b; });
-  var deduped = [];
-  boundaries.forEach(function (q) {
-    if (!deduped.length || Math.abs(q - deduped[deduped.length - 1]) > 1e-6) {
-      deduped.push(q);
-    }
-  });
-  return deduped;
-}
-
-function osmdCountQuarterValuesInRange(values, startQ, endQ) {
-  var eps = 1e-6;
-  var count = 0;
-  (values || []).forEach(function (value) {
-    var q = Number(value);
-    if (!Number.isFinite(q)) {
-      return;
-    }
-    if (q >= startQ - eps && q < endQ - eps) {
-      count += 1;
-    }
-  });
-  return count;
-}
-
-function osmdCountMapEntriesInRange(onsetAnchorMap, startQ, endQ) {
-  if (!(onsetAnchorMap instanceof Map) || onsetAnchorMap.size === 0) {
-    return 0;
-  }
-  var eps = 1e-6;
-  var count = 0;
-  onsetAnchorMap.forEach(function (x, key) {
-    var q = Number(key);
-    var nx = Number(x);
-    if (!Number.isFinite(q) || !Number.isFinite(nx)) {
-      return;
-    }
-    if (q >= startQ - eps && q < endQ - eps) {
-      count += 1;
-    }
-  });
-  return count;
-}
-
-function osmdCountBeatAnchorsInRange(onsetAnchorMap, startQ, endQ) {
-  if (!(onsetAnchorMap instanceof Map) || onsetAnchorMap.size === 0) {
-    return 0;
-  }
-  var eps = 1e-3;
-  var count = 0;
-  var beatStart = Math.ceil(Number(startQ) - 1e-6);
-  var beatEnd = Math.floor(Number(endQ) - 1e-6);
-  for (var beatQ = beatStart; beatQ <= beatEnd; beatQ++) {
-    if (!(beatQ >= startQ - eps && beatQ < endQ - eps)) {
-      continue;
-    }
-    var key = quarterKey(beatQ);
-    if (onsetAnchorMap.has(key) && Number.isFinite(Number(onsetAnchorMap.get(key)))) {
-      count += 1;
-      continue;
-    }
-    var found = false;
-    onsetAnchorMap.forEach(function (x, mapKey) {
-      if (found) {
-        return;
-      }
-      var q = Number(mapKey);
-      var nx = Number(x);
-      if (!Number.isFinite(q) || !Number.isFinite(nx)) {
-        return;
-      }
-      if (Math.abs(q - beatQ) <= eps) {
-        found = true;
-      }
-    });
-    if (found) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function osmdFindMinMapXInRange(onsetAnchorMap, startQ, endQ) {
-  if (!(onsetAnchorMap instanceof Map) || onsetAnchorMap.size === 0) {
-    return Number.NaN;
-  }
-  var eps = 1e-6;
-  var minX = Number.NaN;
-  onsetAnchorMap.forEach(function (x, key) {
-    var q = Number(key);
-    var nx = Number(x);
-    if (!Number.isFinite(q) || !Number.isFinite(nx)) {
-      return;
-    }
-    if (q < startQ - eps || q >= endQ - eps) {
-      return;
-    }
-    if (!Number.isFinite(minX) || nx < minX) {
-      minX = nx;
-    }
-  });
-  return minX;
-}
-
-function osmdBuildConductorOnsetAnchorsByMostDetailedBar(
-  staffOnsetMaps,
-  staffSlices,
-  barlinesQ,
-  fromQuarter,
-  numQuarters,
-  preferredStaffIndex
-) {
-  var mergedMap = new Map();
-  var perBarSelection = [];
-  var staffCount = Math.max(
-    Array.isArray(staffOnsetMaps) ? staffOnsetMaps.length : 0,
-    Array.isArray(staffSlices) ? staffSlices.length : 0
-  );
-  if (staffCount <= 0) {
-    return {
-      map: mergedMap,
-      perBarSelection: perBarSelection,
-    };
-  }
-
-  var boundaries = osmdBuildBarBoundariesQ(fromQuarter, numQuarters, barlinesQ);
-  var preferred = Number(preferredStaffIndex);
-  if (!Number.isFinite(preferred)) {
-    preferred = 0;
-  }
-  preferred = Math.max(0, Math.min(Math.floor(preferred), staffCount - 1));
-  var eventOnsetsByStaff = new Array(staffCount);
-  for (var s = 0; s < staffCount; s++) {
-    var slice = Array.isArray(staffSlices) ? staffSlices[s] : null;
-    var events = slice && Array.isArray(slice.events) ? slice.events : [];
-    eventOnsetsByStaff[s] = osmdUniqueOnsetQuarters(events, fromQuarter, numQuarters);
-  }
-
-  for (var bi = 0; bi < boundaries.length - 1; bi++) {
-    var barStartQ = Number(boundaries[bi]);
-    var barEndQ = Number(boundaries[bi + 1]);
-    if (!Number.isFinite(barStartQ) || !Number.isFinite(barEndQ) || barEndQ <= barStartQ + 1e-6) {
-      continue;
-    }
-    var bestStaffIndex = -1;
-    var bestBeatAnchorCount = -1;
-    var bestMappedCount = -1;
-    var bestEventCount = -1;
-    var bestMinX = Number.NaN;
-    var countsByStaff = new Array(staffCount);
-    for (var si = 0; si < staffCount; si++) {
-      var onsetMap = Array.isArray(staffOnsetMaps) ? staffOnsetMaps[si] : null;
-      var beatAnchorCount = osmdCountBeatAnchorsInRange(onsetMap, barStartQ, barEndQ);
-      var mappedCount = osmdCountMapEntriesInRange(onsetMap, barStartQ, barEndQ);
-      var eventCount = osmdCountQuarterValuesInRange(eventOnsetsByStaff[si], barStartQ, barEndQ);
-      var minX = osmdFindMinMapXInRange(onsetMap, barStartQ, barEndQ);
-      countsByStaff[si] = {
-        beatAnchorCount: beatAnchorCount,
-        mappedCount: mappedCount,
-        eventCount: eventCount,
-        minX: minX,
-      };
-
-      var shouldTake = false;
-      if (beatAnchorCount > bestBeatAnchorCount) {
-        shouldTake = true;
-      } else if (beatAnchorCount === bestBeatAnchorCount && mappedCount > bestMappedCount) {
-        shouldTake = true;
-      } else if (
-        beatAnchorCount === bestBeatAnchorCount &&
-        mappedCount === bestMappedCount &&
-        eventCount > bestEventCount
-      ) {
-        shouldTake = true;
-      } else if (
-        beatAnchorCount === bestBeatAnchorCount &&
-        mappedCount === bestMappedCount &&
-        eventCount === bestEventCount &&
-        Number.isFinite(minX) &&
-        (!Number.isFinite(bestMinX) || minX < bestMinX - 1e-6)
-      ) {
-        // Prefer the equally-detailed staff whose anchors begin further left
-        // in the bar. This avoids late-shifted starts collapsing barline mapping.
-        shouldTake = true;
-      } else if (
-        beatAnchorCount === bestBeatAnchorCount &&
-        mappedCount === bestMappedCount &&
-        eventCount === bestEventCount &&
-        Number.isFinite(minX) &&
-        Number.isFinite(bestMinX) &&
-        Math.abs(minX - bestMinX) <= 1e-6 &&
-        bestStaffIndex !== preferred &&
-        si === preferred
-      ) {
-        shouldTake = true;
-      } else if (
-        beatAnchorCount === bestBeatAnchorCount &&
-        mappedCount === bestMappedCount &&
-        eventCount === bestEventCount &&
-        Number.isFinite(minX) &&
-        Number.isFinite(bestMinX) &&
-        Math.abs(minX - bestMinX) <= 1e-6 &&
-        bestStaffIndex >= 0 &&
-        si < bestStaffIndex
-      ) {
-        shouldTake = true;
-      }
-
-      if (shouldTake) {
-        bestStaffIndex = si;
-        bestBeatAnchorCount = beatAnchorCount;
-        bestMappedCount = mappedCount;
-        bestEventCount = eventCount;
-        bestMinX = minX;
-      }
-    }
-
-    if (bestStaffIndex < 0) {
-      bestStaffIndex = preferred;
-      bestBeatAnchorCount = 0;
-      bestMappedCount = 0;
-      bestEventCount = 0;
-      bestMinX = Number.NaN;
-    }
-
-    var chosenSourceStaffIndex = bestStaffIndex;
-    var copiedCount = 0;
-    function copyAnchorsFromStaff(staffIndex) {
-      var onsetMap = Array.isArray(staffOnsetMaps) ? staffOnsetMaps[staffIndex] : null;
-      if (!(onsetMap instanceof Map) || onsetMap.size === 0) {
-        return 0;
-      }
-      var eps = 1e-6;
-      var copied = 0;
-      onsetMap.forEach(function (x, key) {
-        var q = Number(key);
-        var nx = Number(x);
-        if (!Number.isFinite(q) || !Number.isFinite(nx)) {
-          return;
-        }
-        if (q < barStartQ - eps || q >= barEndQ - eps) {
-          return;
-        }
-        mergedMap.set(quarterKey(q), nx);
-        copied += 1;
-      });
-      return copied;
-    }
-
-    copiedCount = copyAnchorsFromStaff(bestStaffIndex);
-    if (copiedCount <= 0) {
-      for (var fallbackIdx = 0; fallbackIdx < staffCount; fallbackIdx++) {
-        if (fallbackIdx === bestStaffIndex) {
-          continue;
-        }
-        copiedCount = copyAnchorsFromStaff(fallbackIdx);
-        if (copiedCount > 0) {
-          chosenSourceStaffIndex = fallbackIdx;
-          break;
-        }
-      }
-    }
-
-    var chosenCounts = countsByStaff[chosenSourceStaffIndex] || { mappedCount: 0, eventCount: 0 };
-    perBarSelection.push({
-      startQ: barStartQ,
-      endQ: barEndQ,
-      staffIndex: chosenSourceStaffIndex,
-      beatAnchors: Number(chosenCounts.beatAnchorCount) || 0,
-      mappedOnsets: Number(chosenCounts.mappedCount) || 0,
-      eventOnsets: Number(chosenCounts.eventCount) || 0,
-      minAnchorX: Number(chosenCounts.minX),
-      copiedAnchors: copiedCount,
-      preferredStaffIndex: preferred,
-    });
-  }
-
-  return {
-    map: mergedMap,
-    perBarSelection: perBarSelection,
-  };
-}
-
-function osmdMapHasNearQuarterKey(map, targetQ, tolerance) {
-  if (!(map instanceof Map) || map.size === 0) {
-    return false;
-  }
-  var q = Number(targetQ);
-  if (!Number.isFinite(q)) {
-    return false;
-  }
-  var eps = Number.isFinite(tolerance) ? Math.max(1e-6, Number(tolerance)) : 1e-3;
-  var found = false;
-  map.forEach(function (_value, key) {
-    if (found) {
-      return;
-    }
-    var keyQ = Number(key);
-    if (!Number.isFinite(keyQ)) {
-      return;
-    }
-    if (Math.abs(keyQ - q) <= eps) {
-      found = true;
-    }
-  });
-  return found;
-}
-
-function osmdCollectConductorBeatExactCandidateXs(staffOnsetMaps, fromQuarter, numQuarters) {
-  var out = new Map();
-  if (!Array.isArray(staffOnsetMaps) || staffOnsetMaps.length === 0) {
-    return out;
-  }
-  var startQ = Number(fromQuarter);
-  var totalBeats = Math.max(1, Math.ceil(Number(numQuarters) - 1e-9));
-  var endQ = startQ + totalBeats;
-  var eps = 1e-3;
-  var beatStart = Math.ceil(startQ - 1e-6);
-  var beatEnd = Math.floor(endQ + 1e-6);
-  for (var beatQ = beatStart; beatQ <= beatEnd; beatQ++) {
-    if (beatQ < startQ - 1e-6 || beatQ > endQ + 1e-6) {
-      continue;
-    }
-    var beatKey = quarterKey(beatQ);
-    var candidates = [];
-    for (var si = 0; si < staffOnsetMaps.length; si++) {
-      var onsetMap = staffOnsetMaps[si];
-      if (!(onsetMap instanceof Map) || onsetMap.size === 0) {
-        continue;
-      }
-      var directX = Number(onsetMap.get(beatKey));
-      if (Number.isFinite(directX)) {
-        candidates.push(directX);
-        continue;
-      }
-      onsetMap.forEach(function (x, key) {
-        var q = Number(key);
-        var nx = Number(x);
-        if (!Number.isFinite(q) || !Number.isFinite(nx)) {
-          return;
-        }
-        if (Math.abs(q - beatQ) <= eps) {
-          candidates.push(nx);
-        }
-      });
-    }
-    if (!candidates.length) {
-      continue;
-    }
-    out.set(beatKey, candidates
-      .map(Number)
-      .filter(function (x) { return Number.isFinite(x); })
-      .sort(function (a, b) { return a - b; }));
-  }
-  return out;
-}
-
-function osmdCollectConductorBeatExactAnchors(staffOnsetMaps, fromQuarter, numQuarters) {
-  var out = new Map();
-  var candidateMap = osmdCollectConductorBeatExactCandidateXs(
-    staffOnsetMaps,
-    fromQuarter,
-    numQuarters
-  );
-  candidateMap.forEach(function (candidates, beatKey) {
-    if (!Array.isArray(candidates) || !candidates.length) {
-      return;
-    }
-    var medianIndex = Math.floor((candidates.length - 1) / 2);
-    out.set(beatKey, Number(candidates[medianIndex]));
-  });
-  return out;
 }
 
 function osmdFindFirstOnsetAnchor(onsetAnchorMap, startQ, endQ) {
@@ -2559,25 +1775,6 @@ function osmdResolveRightAnchorX(detectedBarlineXs, layoutRightX) {
   return nearRight[nearRight.length - 1];
 }
 
-function osmdDetectFinalBarlineXStrict(detectedBarlineXs) {
-  var candidates = osmdDedupSortedXs(detectedBarlineXs || [], 1.25)
-    .map(Number)
-    .filter(function (x) { return Number.isFinite(x); })
-    .sort(function (a, b) { return a - b; });
-  if (!candidates.length) {
-    return Number.NaN;
-  }
-  if (candidates.length >= 2) {
-    var last = candidates[candidates.length - 1];
-    var prev = candidates[candidates.length - 2];
-    // Thick final barline can appear as two very close vertical bars.
-    if (last - prev <= 6) {
-      return prev;
-    }
-  }
-  return candidates[candidates.length - 1];
-}
-
 function ensureOsmdInstance(container) {
   if (!container) {
     throw new Error('Missing #score container for OSMD rendering.');
@@ -2629,327 +1826,156 @@ function buildBeatSplitPointsForOsmd(
   onsetAnchorMap,
   barlineXByQuarter,
   leftEdgeX,
-  rightEdgeX,
-  beatExactCandidateXsByQ,
-  startAnchorPolicy,
-  startAttributeRightX
+  rightEdgeX
 ) {
-  void sliceEvents;
-  void leftEdgeX;
-  void startAnchorPolicy;
-  void startAttributeRightX;
-
   var eps = 1e-6;
-  var beatSnapEps = 1e-3;
   var totalBeats = Math.max(1, Math.ceil(Number(numQuarters) - 1e-9));
   var startQ = Number(fromQuarter);
   var endQ = startQ + totalBeats;
-  if (!Number.isFinite(startQ) || !Number.isFinite(endQ) || endQ <= startQ + eps) {
-    throw new Error('Split-point error: invalid quarter range.');
+  var splitPoints = new Array(totalBeats + 1);
+  var firstOnset = osmdFindFirstOnsetAnchor(onsetAnchorMap, startQ, endQ);
+  if (!Number.isFinite(firstOnset.x)) {
+    throw new Error('Unable to detect first note/rest onset for split-point alignment.');
   }
 
-  function resolveFirstTimeSignatureRightX() {
-    if (!(timeSignatureBoundsByQuarter instanceof Map) || timeSignatureBoundsByQuarter.size === 0) {
-      return Number.NaN;
-    }
-    var direct = timeSignatureBoundsByQuarter.get(quarterKey(startQ));
-    if (direct && Number.isFinite(Number(direct.right))) {
-      return Number(direct.right);
-    }
-    var firstLeft = Number.POSITIVE_INFINITY;
-    var firstRight = Number.NaN;
-    timeSignatureBoundsByQuarter.forEach(function (bounds) {
-      var left = Number(bounds && bounds.left);
-      var right = Number(bounds && bounds.right);
-      if (!Number.isFinite(left) || !Number.isFinite(right)) {
-        return;
-      }
-      if (left < firstLeft) {
-        firstLeft = left;
-        firstRight = right;
-      }
-    });
-    return firstRight;
+  var startTimeSig = timeSignatureBoundsByQuarter instanceof Map
+    ? timeSignatureBoundsByQuarter.get(quarterKey(startQ))
+    : null;
+  var startX = Number(firstOnset.x);
+  if (
+    startTimeSig &&
+    Number.isFinite(startTimeSig.right) &&
+    startX > Number(startTimeSig.right) + eps
+  ) {
+    startX = (Number(startTimeSig.right) + startX) / 2;
   }
 
-  function collectBeatOnsetXs(targetQ) {
-    if (!(onsetAnchorMap instanceof Map) || onsetAnchorMap.size === 0) {
-      return (beatExactCandidateXsByQ instanceof Map && Array.isArray(beatExactCandidateXsByQ.get(quarterKey(targetQ))))
-        ? beatExactCandidateXsByQ.get(quarterKey(targetQ)).slice()
-        : [];
+  var endX = Number(rightEdgeX);
+  if (!Number.isFinite(endX) || endX <= startX + eps) {
+    throw new Error('Invalid final barline anchor for split-point alignment.');
+  }
+
+  var anchorsByQ = new Map();
+  function setAnchor(q, x, priority) {
+    var nq = Number(q);
+    var nx = Number(x);
+    if (!Number.isFinite(nq) || !Number.isFinite(nx)) {
+      return;
     }
-    var beatKey = quarterKey(targetQ);
-    var xs = [];
-    var direct = Number(onsetAnchorMap.get(quarterKey(targetQ)));
-    if (Number.isFinite(direct)) {
-      xs.push(direct);
+    if (nq < startQ - eps || nq > endQ + eps) {
+      return;
     }
-    if (beatExactCandidateXsByQ instanceof Map && beatExactCandidateXsByQ.has(beatKey)) {
-      var extra = beatExactCandidateXsByQ.get(beatKey);
-      if (Array.isArray(extra)) {
-        Array.prototype.push.apply(xs, extra);
-      }
+    var key = quarterKey(nq);
+    var prev = anchorsByQ.get(key);
+    if (!prev || Number(priority) >= Number(prev.priority)) {
+      anchorsByQ.set(key, { q: nq, x: nx, priority: Number(priority) });
     }
+  }
+
+  // 1) Native note/rest onset anchors from OSMD spacing.
+  if (onsetAnchorMap instanceof Map) {
     onsetAnchorMap.forEach(function (x, key) {
       var q = Number(key);
-      var nx = Number(x);
-      if (!Number.isFinite(q) || !Number.isFinite(nx)) {
+      if (!Number.isFinite(q) || q <= startQ + eps || q >= endQ - eps) {
         return;
       }
-      if (Math.abs(q - targetQ) <= beatSnapEps) {
-        xs.push(nx);
-      }
+      setAnchor(q, Number(x), 1);
     });
-    return xs
-      .map(Number)
-      .filter(function (x) { return Number.isFinite(x); })
-      .sort(function (a, b) { return a - b; });
   }
 
-  function pickBeatOnsetXForBounds(targetQ, candidates, leftBoundX, rightBoundX, expectedX) {
-    var direct = Number(onsetAnchorMap instanceof Map ? onsetAnchorMap.get(quarterKey(targetQ)) : Number.NaN);
-    var lower = Number(leftBoundX);
-    var upper = Number(rightBoundX);
-    var expected = Number(expectedX);
-    var bounded = (candidates || [])
-      .map(Number)
-      .filter(function (x) {
-        if (!Number.isFinite(x)) {
-          return false;
-        }
-        if (Number.isFinite(lower) && x <= lower + eps) {
-          return false;
-        }
-        if (Number.isFinite(upper) && x >= upper - eps) {
-          return false;
-        }
-        return true;
-      })
-      .sort(function (a, b) { return a - b; });
-    if (!bounded.length) {
-      return Number.NaN;
-    }
-    if (Number.isFinite(expected)) {
-      var best = bounded[0];
-      var bestDist = Math.abs(best - expected);
-      for (var ci = 1; ci < bounded.length; ci++) {
-        var cand = bounded[ci];
-        var dist = Math.abs(cand - expected);
-        if (dist < bestDist - 1e-6) {
-          best = cand;
-          bestDist = dist;
-          continue;
-        }
-        if (Math.abs(dist - bestDist) <= 1e-6 && cand < best) {
-          best = cand;
-          bestDist = dist;
-        }
-      }
-      return Number(best);
-    }
-    if (Number.isFinite(direct)) {
-      var directIsValid = (!Number.isFinite(lower) || direct > lower + eps) &&
-        (!Number.isFinite(upper) || direct < upper - eps);
-      if (directIsValid) {
-        return direct;
-      }
-    }
-    var mid = Math.floor((bounded.length - 1) / 2);
-    return Number(bounded[mid]);
-  }
-
-  function median(values) {
-    if (!Array.isArray(values) || !values.length) {
-      return Number.NaN;
-    }
-    var mid = Math.floor((values.length - 1) / 2);
-    return Number(values[mid]);
-  }
-
-  function findNearestAnchoredIndex(anchorByIndex, fromIndex, step) {
-    var idx = fromIndex + step;
-    while (idx >= 0 && idx <= totalBeats) {
-      if (anchorByIndex[idx] && Number.isFinite(Number(anchorByIndex[idx].x))) {
-        return idx;
-      }
-      idx += step;
-    }
-    return -1;
-  }
-
-  function isFixedAnchorSource(source) {
-    return source === 'boundary' || source === 'barline';
-  }
-
-  function findNearestFixedIndex(anchorByIndex, fromIndex, step) {
-    var idx = fromIndex + step;
-    while (idx >= 0 && idx <= totalBeats) {
-      var entry = anchorByIndex[idx];
-      if (
-        entry &&
-        Number.isFinite(Number(entry.x)) &&
-        isFixedAnchorSource(String(entry.source || ''))
-      ) {
-        return idx;
-      }
-      idx += step;
-    }
-    return -1;
-  }
-
-  var firstSplitX = Number(resolveFirstTimeSignatureRightX());
-  if (!Number.isFinite(firstSplitX)) {
-    throw new Error('Split-point error: first time-signature right edge was not detected.');
-  }
-
-  var finalSplitX = Number(rightEdgeX);
-  if (!Number.isFinite(finalSplitX)) {
-    throw new Error('Split-point error: final barline was not detected.');
-  }
-  if (finalSplitX <= firstSplitX + eps) {
-    throw new Error('Split-point error: final barline is not to the right of the first split point.');
-  }
-
-  var priorityBySource = {
-    boundary: 1,
-    onset: 2,
-    barline: 3,
-  };
-  var anchorByIndex = new Array(totalBeats + 1);
-  function setAnchorAtIndex(index, x, source) {
-    var idx = Math.floor(Number(index));
-    var nx = Number(x);
-    if (!Number.isFinite(idx) || idx < 0 || idx > totalBeats) {
-      return;
-    }
-    if (!Number.isFinite(nx)) {
-      return;
-    }
-    var prev = anchorByIndex[idx];
-    if (!prev) {
-      anchorByIndex[idx] = { x: nx, source: String(source || '') };
-      return;
-    }
-    var prevPriority = Number(priorityBySource[String(prev.source)] || 0);
-    var nextPriority = Number(priorityBySource[String(source)] || 0);
-    if (nextPriority >= prevPriority) {
-      anchorByIndex[idx] = { x: nx, source: String(source || '') };
-    }
-  }
-
-  // Rule 1.
-  setAnchorAtIndex(0, firstSplitX, 'boundary');
-  // Rule 2.
-  setAnchorAtIndex(totalBeats, finalSplitX, 'boundary');
-
-  // Rule 3: barlines are highest-priority anchors.
+  // 2) Forced barline anchors (internal). Barline has higher priority than TS.
   (barlinesQ || []).forEach(function (barQ) {
     var q = normalizeQuarterBoundary(barQ);
     if (!Number.isFinite(q) || q <= startQ + eps || q >= endQ - eps) {
       return;
     }
-    var idxFloat = q - startQ;
-    var idx = Math.round(idxFloat);
-    if (Math.abs(idxFloat - idx) > beatSnapEps || idx <= 0 || idx >= totalBeats) {
-      return;
-    }
     var key = quarterKey(q);
-    if (!(barlineXByQuarter instanceof Map) || !barlineXByQuarter.has(key)) {
-      throw new Error('Split-point error: failed to resolve barline anchor at quarter ' + q + '.');
+    if (barlineXByQuarter instanceof Map && barlineXByQuarter.has(key)) {
+      setAnchor(q, Number(barlineXByQuarter.get(key)), 3);
     }
-    var barlineX = Number(barlineXByQuarter.get(key));
-    if (!Number.isFinite(barlineX)) {
-      throw new Error('Split-point error: invalid barline anchor at quarter ' + q + '.');
-    }
-    setAnchorAtIndex(idx, barlineX, 'barline');
   });
 
-  // Rule 4: beat-exact onset anchors (when not barline beats).
-  for (var beatIndex = 1; beatIndex < totalBeats; beatIndex++) {
-    if (anchorByIndex[beatIndex] && anchorByIndex[beatIndex].source === 'barline') {
-      continue;
-    }
-    var beatQ = startQ + beatIndex;
-    var onsetXs = collectBeatOnsetXs(beatQ);
-    if (!onsetXs.length) {
-      continue;
-    }
-    var leftAnchoredIdx = findNearestAnchoredIndex(anchorByIndex, beatIndex, -1);
-    var leftBoundX = leftAnchoredIdx >= 0 ? Number(anchorByIndex[leftAnchoredIdx].x) : Number.NaN;
-    var leftFixedIdx = findNearestFixedIndex(anchorByIndex, beatIndex, -1);
-    var leftFixedX = leftFixedIdx >= 0 ? Number(anchorByIndex[leftFixedIdx].x) : Number.NaN;
-    var rightFixedIdx = findNearestFixedIndex(anchorByIndex, beatIndex, 1);
-    var rightBoundX = rightFixedIdx >= 0 ? Number(anchorByIndex[rightFixedIdx].x) : Number.NaN;
-    var expectedX = Number.NaN;
-    if (
-      leftFixedIdx >= 0 &&
-      rightFixedIdx >= 0 &&
-      rightFixedIdx > leftFixedIdx &&
-      Number.isFinite(leftFixedX) &&
-      Number.isFinite(rightBoundX) &&
-      rightBoundX > leftFixedX + eps
-    ) {
-      var expectedRatio = (beatIndex - leftFixedIdx) / (rightFixedIdx - leftFixedIdx);
-      expectedX = leftFixedX + expectedRatio * (rightBoundX - leftFixedX);
-    }
-    var onsetX = pickBeatOnsetXForBounds(beatQ, onsetXs, leftBoundX, rightBoundX, expectedX);
-    if (!Number.isFinite(onsetX)) {
-      continue;
-    }
-    if (
-      leftAnchoredIdx >= 0 &&
-      Number.isFinite(Number(anchorByIndex[leftAnchoredIdx].x)) &&
-      onsetX <= Number(anchorByIndex[leftAnchoredIdx].x) + eps
-    ) {
-      continue;
-    }
-    if (
-      rightFixedIdx >= 0 &&
-      Number.isFinite(Number(anchorByIndex[rightFixedIdx].x)) &&
-      onsetX >= Number(anchorByIndex[rightFixedIdx].x) - eps
-    ) {
-      continue;
-    }
-    setAnchorAtIndex(beatIndex, onsetX, 'onset');
+  // 3) Forced time-signature-left anchors for internal changes.
+  if (timeSignatureBoundsByQuarter instanceof Map) {
+    timeSignatureBoundsByQuarter.forEach(function (bounds, key) {
+      var q = Number(key);
+      if (!Number.isFinite(q) || q <= startQ + eps || q >= endQ - eps) {
+        return;
+      }
+      if (!bounds || !Number.isFinite(bounds.left)) {
+        return;
+      }
+      setAnchor(q, Number(bounds.left), 2);
+    });
   }
 
-  // Rule 5: fill missing beats by equal split between surrounding resolved anchors.
-  var splitPoints = new Array(totalBeats + 1);
+  // 4) Start/end anchors.
+  setAnchor(startQ, startX, 4);
+  setAnchor(endQ, endX, 4);
+
+  var anchors = Array.from(anchorsByQ.values())
+    .sort(function (a, b) {
+      if (Math.abs(a.q - b.q) > eps) {
+        return a.q - b.q;
+      }
+      return a.x - b.x;
+    });
+  if (!anchors.length) {
+    throw new Error('No split-point anchors available.');
+  }
+
+  for (var a = 1; a < anchors.length; a++) {
+    if (anchors[a].x <= anchors[a - 1].x + eps) {
+      throw new Error('Non-increasing anchor positions near quarter ' + anchors[a].q + '.');
+    }
+  }
+
+  function findAnchorAtQuarter(targetQ) {
+    var key = quarterKey(targetQ);
+    if (!anchorsByQ.has(key)) {
+      return null;
+    }
+    return anchorsByQ.get(key);
+  }
+
+  function findBracket(targetQ) {
+    var left = null;
+    var right = null;
+    for (var i = 0; i < anchors.length; i++) {
+      var anchor = anchors[i];
+      if (anchor.q < targetQ - eps) {
+        left = anchor;
+        continue;
+      }
+      if (anchor.q > targetQ + eps) {
+        right = anchor;
+        break;
+      }
+    }
+    return { left: left, right: right };
+  }
+
   for (var i = 0; i <= totalBeats; i++) {
-    if (anchorByIndex[i] && Number.isFinite(Number(anchorByIndex[i].x))) {
-      splitPoints[i] = Number(anchorByIndex[i].x);
+    var q = startQ + i;
+    var exact = findAnchorAtQuarter(q);
+    if (exact) {
+      splitPoints[i] = Number(exact.x);
       continue;
     }
-    var leftIdx = findNearestAnchoredIndex(anchorByIndex, i, -1);
-    var rightIdx = findNearestAnchoredIndex(anchorByIndex, i, 1);
-    if (leftIdx < 0 || rightIdx < 0 || rightIdx <= leftIdx) {
-      throw new Error('Split-point error: unable to bracket beat boundary at quarter ' + (startQ + i) + '.');
+    var bracket = findBracket(q);
+    if (!bracket.left || !bracket.right) {
+      throw new Error('Cannot bracket split point for quarter ' + q + '.');
     }
-    var leftX = Number(anchorByIndex[leftIdx].x);
-    var rightX = Number(anchorByIndex[rightIdx].x);
-    if (!Number.isFinite(leftX) || !Number.isFinite(rightX) || rightX <= leftX + eps) {
-      throw new Error('Split-point error: invalid anchor span around quarter ' + (startQ + i) + '.');
+    var dq = bracket.right.q - bracket.left.q;
+    if (!(dq > eps)) {
+      throw new Error('Invalid anchor interval around quarter ' + q + '.');
     }
-    var ratio = (i - leftIdx) / (rightIdx - leftIdx);
-    splitPoints[i] = leftX + ratio * (rightX - leftX);
+    var ratio = (q - bracket.left.q) / dq;
+    splitPoints[i] = bracket.left.x + ratio * (bracket.right.x - bracket.left.x);
   }
 
-  // Keep boundary points exact.
-  splitPoints[0] = firstSplitX;
-  splitPoints[totalBeats] = finalSplitX;
-
-  // Rule 7: strict monotonic check, fail hard on collapse/non-increasing.
-  for (var sp = 1; sp < splitPoints.length; sp++) {
-    var prevX = Number(splitPoints[sp - 1]);
-    var currentX = Number(splitPoints[sp]);
-    if (!Number.isFinite(prevX) || !Number.isFinite(currentX)) {
-      throw new Error('Split-point error: non-finite split point at quarter ' + (startQ + sp) + '.');
-    }
-    if (currentX <= prevX + eps) {
-      throw new Error('Split-point error: non-increasing split points near quarter ' + (startQ + sp) + '.');
-    }
-  }
-
+  splitPoints[0] = startX;
+  splitPoints[splitPoints.length - 1] = endX;
   return splitPoints;
 }
 
@@ -3080,34 +2106,8 @@ function createBeatHighlightOverlay(context, fromQuarter, safeNumQuarters, xForQ
     return null;
   }
 
-  var overlayLayout = osmdDetectConductorLayout(svgRoot);
-  var overlayTopSource = Number(
-    overlayLayout && overlayLayout.layout && Number.isFinite(Number(overlayLayout.layout.topY))
-      ? overlayLayout.layout.topY
-      : osmdLayout.topY
-  );
-  var overlayBottomSource = Number(
-    overlayLayout && overlayLayout.layout && Number.isFinite(Number(overlayLayout.layout.bottomY))
-      ? overlayLayout.layout.bottomY
-      : osmdLayout.bottomY
-  );
-  if (!Number.isFinite(overlayTopSource) || !Number.isFinite(overlayBottomSource) || overlayBottomSource <= overlayTopSource) {
-    return null;
-  }
-  var topY = overlayTopSource - 14;
-  var bottomY = overlayBottomSource + 14;
-  var vbRaw = String(svgRoot.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
-  if (
-    vbRaw.length >= 4 &&
-    Number.isFinite(vbRaw[1]) &&
-    Number.isFinite(vbRaw[3]) &&
-    vbRaw[3] > 0
-  ) {
-    var vbTop = vbRaw[1];
-    var vbBottom = vbRaw[1] + vbRaw[3];
-    topY = Math.max(vbTop, topY);
-    bottomY = Math.min(vbBottom, bottomY);
-  }
+  var topY = Math.max(0, Number(osmdLayout.topY) - 14);
+  var bottomY = Math.min(full_Height - 1, Number(osmdLayout.bottomY) + 14);
   var height = Math.max(1, bottomY - topY);
 
   var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -3185,35 +2185,8 @@ function drawAndAnimatePlaybarTimeMapped(
   var playheadLine = null;
   var svgRoot = getActiveScoreSvg();
   if (playheadEnabled && svgRoot) {
-    var playheadLayout = osmdDetectConductorLayout(svgRoot);
-    var playheadTopSource = Number(
-      playheadLayout && playheadLayout.layout && Number.isFinite(Number(playheadLayout.layout.topY))
-        ? playheadLayout.layout.topY
-        : osmdLayout.topY
-    );
-    var playheadBottomSource = Number(
-      playheadLayout && playheadLayout.layout && Number.isFinite(Number(playheadLayout.layout.bottomY))
-        ? playheadLayout.layout.bottomY
-        : osmdLayout.bottomY
-    );
-    var playbarTopY = Number.isFinite(playheadTopSource) ? playheadTopSource - 70 : 0;
-    var playbarBottomY = Number.isFinite(playheadBottomSource) ? playheadBottomSource + 80 : 1;
-    var playheadVbRaw = String(svgRoot.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
-    if (
-      playheadVbRaw.length >= 4 &&
-      Number.isFinite(playheadVbRaw[1]) &&
-      Number.isFinite(playheadVbRaw[3]) &&
-      playheadVbRaw[3] > 0
-    ) {
-      var playheadVbTop = playheadVbRaw[1];
-      var playheadVbBottom = playheadVbRaw[1] + playheadVbRaw[3];
-      playbarTopY = Math.max(playheadVbTop, playbarTopY);
-      playbarBottomY = Math.min(playheadVbBottom, playbarBottomY);
-    }
-    if (!Number.isFinite(playbarTopY) || !Number.isFinite(playbarBottomY) || playbarBottomY <= playbarTopY) {
-      playbarTopY = 0;
-      playbarBottomY = 1;
-    }
+    var playbarTopY = Math.max(0, Number(osmdLayout.topY) - 70);
+    var playbarBottomY = Math.min(full_Height - 1, Number(osmdLayout.bottomY) + 80);
     playheadLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
     playheadLine.setAttribute('x1', String(startX));
     playheadLine.setAttribute('x2', String(startX));
@@ -3226,30 +2199,47 @@ function drawAndAnimatePlaybarTimeMapped(
   }
 
   playbarLastStepMs = serverNowMs();
-  var snakeRequestedForCycle = false;
   var swapTriggeredThisCycle = false;
   var lastCycleIndex = null;
   var phrasePhaseAnchorQuarters = null;
+  var lastRoomQuarterCounter = Number.NaN;
+  var lastRoomBeatInPhrase = Number.NaN;
 
-  function setUpcomingPhraseStartAnchor(anchorQuarters) {
-    if (typeof setPendingPhraseStartAnchor !== 'function') {
+  function publishTimingDebug(state, absoluteQuarters, progressedQuarters, roomQuarter, roomBeat, roomBeats) {
+    if (typeof updateTimingDebugLine !== 'function') {
       return;
     }
-    var numeric = Number(anchorQuarters);
-    if (!Number.isFinite(numeric)) {
-      return;
-    }
-    setPendingPhraseStartAnchor(numeric);
+    updateTimingDebugLine({
+      state: state,
+      roomQuarter: roomQuarter,
+      roomBeat: roomBeat,
+      roomBeats: roomBeats,
+      absoluteQuarters: absoluteQuarters,
+      progressedQuarters: progressedQuarters,
+      anchorQuarters: phrasePhaseAnchorQuarters,
+      fromQuarter: fromQuarter,
+      numQuarters: safeNumQuarters,
+    });
   }
 
-  function requestSnakeForCycle() {
-    if (snakeRequestedForCycle) {
-      return;
+  function hasAuthoritativePhraseControl() {
+    return !!readRoomStateCurrentPhrase();
+  }
+
+  function applyAuthoritativeBoundaryState() {
+    var currentDescriptor = readRoomStateCurrentPhrase();
+    if (!currentDescriptor) {
+      return false;
     }
-    snakeRequestedForCycle = true;
-    if (typeof wsSend === 'function') {
-      wsSend('snake');
+    var alreadyCurrent = phraseDescriptorEqualsSnapshot(currentDescriptor, currentPhraseSnapshot);
+    if (alreadyCurrent && playbarAnimationFrame) {
+      return false;
     }
+    removePhrasePreviewOverlay(false);
+    playbarAnimationFrame = 0;
+    playbarLastStepMs = 0;
+    renderMusicFromSnake();
+    return true;
   }
 
   function showPreStartFrame(now) {
@@ -3266,19 +2256,35 @@ function drawAndAnimatePlaybarTimeMapped(
       playheadLine.setAttribute('x1', String(preStartWindow.startX));
       playheadLine.setAttribute('x2', String(preStartWindow.startX));
     }
+    publishTimingDebug('pre', Number.NaN, 0, Number.NaN, Number.NaN, totalQuarterBeats);
     refreshMetronomeVisual(now);
     playbarAnimationFrame = requestAnimationFrame(step);
   }
 
-  function handleCycleBoundary(now, totalQuarterBeats, boundaryAnchorQuarters) {
-    requestSnakeForCycle();
+  function handleCycleBoundary(now, totalQuarterBeats) {
+    if (typeof applyQueuedDynamicsAtPhraseStart === 'function') {
+      applyQueuedDynamicsAtPhraseStart(true);
+    }
     refreshMetronomeVisual(now);
-    setBeatIndexDisplay(totalQuarterBeats, totalQuarterBeats);
+    setBeatIndexDisplay(1, totalQuarterBeats);
+    if (hasAuthoritativePhraseControl()) {
+      if (!phraseSwapInProgress && phrasePreviewAwaitingSwap) {
+        startPhraseSwapAnimation(now);
+      }
+      if (phraseSwapInProgress || phrasePreviewAwaitingSwap) {
+        playbarAnimationFrame = 0;
+        playbarLastStepMs = 0;
+        return true;
+      }
+      if (applyAuthoritativeBoundaryState()) {
+        return true;
+      }
+      redrawDynamicsOnly();
+      return false;
+    }
     // Fallback: if swap wasn't triggered early (e.g. very short phrase), start it now.
     if (!phraseSwapInProgress && phrasePreviewAwaitingSwap) {
-      if (startPhraseSwapAnimation(now)) {
-        setUpcomingPhraseStartAnchor(boundaryAnchorQuarters);
-      }
+      startPhraseSwapAnimation(now);
     }
     if (phraseSwapInProgress || phrasePreviewAwaitingSwap) {
       playbarAnimationFrame = 0;
@@ -3292,10 +2298,6 @@ function drawAndAnimatePlaybarTimeMapped(
       renderMusicFromSnake();
       return true;
     }
-    snakeRequestedForCycle = false;
-    if (typeof applyPendingTransportState === 'function') {
-      applyPendingTransportState();
-    }
     // Flush any dynamics update that arrived mid-phrase.
     redrawDynamicsOnly();
     return false;
@@ -3306,36 +2308,36 @@ function drawAndAnimatePlaybarTimeMapped(
     playbarLastStepMs = now;
 
     var tempoQps = Math.max(quarterRatePerSecond(), 1e-6);
-    var totalSeconds = safeNumQuarters / tempoQps;
-    var prefetchLeadSeconds = Math.max(0.2, Math.min(totalSeconds * 0.5, 1 / tempoQps));
     var absoluteQuarters;
     var phraseQuarters;
     var cycleIndex;
     var progressedQuarters;
-    var phaseSeconds;
+    var runningNow = (typeof transportIsRunning === 'function') ? !!transportIsRunning() : true;
+    var observedRoomQuarter = Number.isFinite(Number(roomClockQuarterCounter))
+      ? Math.floor(Number(roomClockQuarterCounter))
+      : Number.NaN;
+    var observedRoomBeat = Number.isFinite(Number(roomClockBeatInPhrase))
+      ? Math.floor(Number(roomClockBeatInPhrase))
+      : Number.NaN;
+    var observedRoomBeats = Math.max(1, Math.floor(Number(roomClockBeatsPerPhrase) || totalQuarterBeats));
 
-    if (!Number.isFinite(transportEpochMs)) {
+    if (typeof transportAbsoluteQuartersAt !== 'function') {
       showPreStartFrame(now);
       return;
     }
-
-    absoluteQuarters = (now - transportEpochMs) * tempoQps / 1000;
+    absoluteQuarters = Number(transportAbsoluteQuartersAt(now));
     if (!Number.isFinite(absoluteQuarters) || absoluteQuarters < 0) {
       showPreStartFrame(now);
       return;
     }
 
     if (!Number.isFinite(phrasePhaseAnchorQuarters)) {
-      var pendingAnchor = (typeof consumePendingPhraseStartAnchor === 'function')
-        ? Number(consumePendingPhraseStartAnchor())
-        : Number.NaN;
-      if (Number.isFinite(pendingAnchor)) {
-        phrasePhaseAnchorQuarters = pendingAnchor;
-      } else {
-      // Snap to the start of the current phrase cycle using the globally-shared
-      // absoluteQuarters, so all windows compute the same anchor regardless of
-      // when they first start rendering.
-        phrasePhaseAnchorQuarters = Math.floor(absoluteQuarters / safeNumQuarters) * safeNumQuarters;
+      phrasePhaseAnchorQuarters = Math.floor(absoluteQuarters / safeNumQuarters) * safeNumQuarters;
+    }
+    if (Number.isFinite(observedRoomQuarter) && Number.isFinite(observedRoomBeat)) {
+      var boundaryQuarter = observedRoomQuarter - (observedRoomBeat - 1);
+      if (Number.isFinite(boundaryQuarter)) {
+        phrasePhaseAnchorQuarters = boundaryQuarter;
       }
     }
 
@@ -3352,25 +2354,79 @@ function drawAndAnimatePlaybarTimeMapped(
     if (progressedQuarters >= safeNumQuarters) {
       progressedQuarters = Math.max(0, safeNumQuarters - 1e-6);
     }
-    phaseSeconds = progressedQuarters / tempoQps;
 
-    if (lastCycleIndex === null) {
+    if (!runningNow) {
       lastCycleIndex = cycleIndex;
-    } else if (cycleIndex > lastCycleIndex) {
-      var boundaryAnchorQuarters = phrasePhaseAnchorQuarters + cycleIndex * safeNumQuarters;
-      if (handleCycleBoundary(now, totalQuarterBeats, boundaryAnchorQuarters)) {
-        return;
-      }
-      lastCycleIndex = cycleIndex;
-    } else if (cycleIndex < lastCycleIndex) {
-      // Transport epoch/tempo revision can move phase backwards; restart per-cycle local flags.
-      snakeRequestedForCycle = false;
       swapTriggeredThisCycle = false;
-      lastCycleIndex = cycleIndex;
+
+      var pausedQuarter = fromQuarter + progressedQuarters;
+      var pausedBeatWindow = buildQuarterBeatWindow(
+        fromQuarter,
+        safeNumQuarters,
+        progressedQuarters,
+        xForQuarter,
+        splitPoints
+      );
+      if (Number.isFinite(observedRoomBeat)) {
+        setBeatIndexDisplay(observedRoomBeat, observedRoomBeats);
+      } else {
+        setBeatIndexDisplay(pausedBeatWindow.beatNumber, pausedBeatWindow.totalBeats);
+      }
+      updateBeatHighlightOverlay(beatOverlay, pausedBeatWindow.startX, pausedBeatWindow.endX);
+
+      if (playheadLine) {
+        var pausedX = xForQuarter(pausedQuarter);
+        if (Number.isFinite(pausedX)) {
+          playheadLine.setAttribute('x1', String(pausedX));
+          playheadLine.setAttribute('x2', String(pausedX));
+        }
+      }
+
+      publishTimingDebug(
+        'pause',
+        absoluteQuarters,
+        progressedQuarters,
+        observedRoomQuarter,
+        observedRoomBeat,
+        observedRoomBeats
+      );
+      refreshMetronomeVisual(now);
+      playbarAnimationFrame = requestAnimationFrame(step);
+      return;
     }
 
-    if (!snakeRequestedForCycle && phaseSeconds >= Math.max(0, totalSeconds - prefetchLeadSeconds)) {
-      requestSnakeForCycle();
+    var usedRoomBeatBoundary = Number.isFinite(observedRoomQuarter) && Number.isFinite(observedRoomBeat);
+    if (usedRoomBeatBoundary) {
+      if (!Number.isFinite(lastRoomQuarterCounter)) {
+        lastRoomQuarterCounter = observedRoomQuarter;
+        lastRoomBeatInPhrase = observedRoomBeat;
+      } else if (observedRoomQuarter > lastRoomQuarterCounter) {
+        var pendingBoundaries = Math.max(0, Math.floor(Number(pendingRoomBoundaryCount) || 0));
+        if (pendingBoundaries > 0 || observedRoomBeat === 1) {
+          pendingRoomBoundaryCount = 0;
+          if (handleCycleBoundary(now, observedRoomBeats)) {
+            return;
+          }
+          swapTriggeredThisCycle = false;
+        }
+        lastRoomQuarterCounter = observedRoomQuarter;
+        lastRoomBeatInPhrase = observedRoomBeat;
+      } else if (observedRoomQuarter === lastRoomQuarterCounter) {
+        lastRoomBeatInPhrase = observedRoomBeat;
+      }
+    } else {
+      if (lastCycleIndex === null) {
+        lastCycleIndex = cycleIndex;
+      } else if (cycleIndex > lastCycleIndex) {
+        if (handleCycleBoundary(now, totalQuarterBeats)) {
+          return;
+        }
+        lastCycleIndex = cycleIndex;
+      } else if (cycleIndex < lastCycleIndex) {
+        // Transport epoch/tempo revision can move phase backwards; restart per-cycle local flags.
+        swapTriggeredThisCycle = false;
+        lastCycleIndex = cycleIndex;
+      }
     }
 
     // Trigger phrase swap 1 eighth note (0.5 quarters) before the end of the phrase.
@@ -3382,9 +2438,7 @@ function drawAndAnimatePlaybarTimeMapped(
       progressedQuarters >= safeNumQuarters - 0.5
     ) {
       swapTriggeredThisCycle = true;
-      if (startPhraseSwapAnimation(now)) {
-        setUpcomingPhraseStartAnchor(phrasePhaseAnchorQuarters + (cycleIndex + 1) * safeNumQuarters);
-      }
+      startPhraseSwapAnimation(now);
     }
 
     var currentQuarter = fromQuarter + progressedQuarters;
@@ -3396,7 +2450,11 @@ function drawAndAnimatePlaybarTimeMapped(
       xForQuarter,
       splitPoints
     );
-    setBeatIndexDisplay(currentBeatWindow.beatNumber, currentBeatWindow.totalBeats);
+    if (Number.isFinite(observedRoomBeat)) {
+      setBeatIndexDisplay(observedRoomBeat, observedRoomBeats);
+    } else {
+      setBeatIndexDisplay(currentBeatWindow.beatNumber, currentBeatWindow.totalBeats);
+    }
     updateBeatHighlightOverlay(beatOverlay, currentBeatWindow.startX, currentBeatWindow.endX);
 
     if (playheadLine) {
@@ -3407,6 +2465,14 @@ function drawAndAnimatePlaybarTimeMapped(
       }
     }
 
+    publishTimingDebug(
+      'run',
+      absoluteQuarters,
+      progressedQuarters,
+      observedRoomQuarter,
+      observedRoomBeat,
+      observedRoomBeats
+    );
     // Drive metronome from absolute transport time so all clients share the same pulse timeline.
     advanceMetronome(absoluteQuarters, now);
     playbarAnimationFrame = requestAnimationFrame(step);
@@ -3435,6 +2501,11 @@ function buildPhraseSnapshot(fromQuarter, numQuarters, staffIndex) {
     transposedKeyChanges
   );
 
+  var originalClef = tannhauserScore ? tannhauserScore.getStaffClef(safeStaff) : null;
+  var autoClefChanges = (originalClef && originalClef.sign === 'F')
+    ? computeAutoClefChanges(transposedEvents, sliceData.barlines, safeFrom, safeNum)
+    : null;
+
   return {
     fromQuarter: safeFrom,
     numQuarters: safeNum,
@@ -3443,74 +2514,7 @@ function buildPhraseSnapshot(fromQuarter, numQuarters, staffIndex) {
     keyChanges: transposedKeyChanges,
     preparedEvents: transposedEvents,
     transposeSemitones: transposeSemitones,
-  };
-}
-
-function sortedUniqueQuarterArray(values) {
-  var out = [];
-  (values || []).forEach(function (value) {
-    var q = normalizeQuarterBoundary(value);
-    if (!Number.isFinite(q)) {
-      return;
-    }
-    if (out.some(function (existing) { return Math.abs(existing - q) <= 1e-6; })) {
-      return;
-    }
-    out.push(q);
-  });
-  out.sort(function (a, b) { return a - b; });
-  return out;
-}
-
-function buildConductorPhraseSnapshot(fromQuarter, numQuarters) {
-  if (!tannhauserScore) {
-    return null;
-  }
-  var safeFrom = Math.floor(Number(fromQuarter));
-  var safeNum = Math.max(1, Math.floor(Number(numQuarters)));
-  var staffCount = tannhauserScore.getStaffCount();
-  if (!Number.isFinite(staffCount) || staffCount <= 0) {
-    return null;
-  }
-
-  var staffSlices = [];
-  var mergedBarlines = [];
-  for (var staffIdx = 0; staffIdx < staffCount; staffIdx++) {
-    var sliceData = tannhauserScore.getExactSliceData(safeFrom, safeNum, staffIdx);
-    var sourceKeyChanges = sliceData.keyChanges || [{ q: safeFrom, fifths: 0 }];
-    var transposedKeyChanges = transposeKeyChanges(sourceKeyChanges, transposeSemitones);
-    var transposedEvents = transposeSliceEvents(
-      sliceData.events,
-      transposeSemitones,
-      safeFrom,
-      safeNum,
-      sliceData.barlines,
-      transposedKeyChanges
-    );
-    var staffClef = tannhauserScore.getStaffClef(staffIdx);
-    var staffAutoClef = (staffClef && staffClef.sign === 'F')
-      ? computeAutoClefChanges(transposedEvents, sliceData.barlines, safeFrom, safeNum)
-      : null;
-    staffSlices.push({
-      staffIndex: staffIdx,
-      staffName: tannhauserScore.getStaffName(staffIdx),
-      clef: staffClef,
-      clefChanges: staffAutoClef,
-      keyChanges: transposedKeyChanges,
-      events: transposedEvents,
-      barlines: Array.isArray(sliceData.barlines) ? sliceData.barlines.slice() : [],
-    });
-    mergedBarlines = mergedBarlines.concat(Array.isArray(sliceData.barlines) ? sliceData.barlines : []);
-  }
-
-  return {
-    mode: 'conductor',
-    fromQuarter: safeFrom,
-    numQuarters: safeNum,
-    barlinesQ: sortedUniqueQuarterArray(mergedBarlines),
-    staffSlices: staffSlices,
-    transposeSemitones: transposeSemitones,
-    referenceStaffIndex: Math.max(0, Math.min(selectedStaff(), staffCount - 1)),
+    clefChanges: autoClefChanges,
   };
 }
 
@@ -3546,7 +2550,8 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     barlinesQ || [],
     options.keyChanges || [{ q: fromQuarter, fifths: 0 }],
     partName,
-    tannhauserScore ? tannhauserScore.getStaffClef(staffIndex) : null
+    tannhauserScore ? tannhauserScore.getStaffClef(staffIndex) : null,
+    options.clefChanges || null
   );
   var xml = xmlBuild && xmlBuild.xml ? xmlBuild.xml : '';
   var timeSignatureStartsQ = xmlBuild && Array.isArray(xmlBuild.timeSignatureStartsQ)
@@ -3568,7 +2573,6 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     stretchLastSystemLine: false,
   });
   osmdDisableMultiRestGeneration(osmd);
-  osmdApplyConductorSpacingRules(osmd);
 
   await osmd.load(xml);
   if (token !== osmdRenderEpoch) {
@@ -3653,10 +2657,7 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     onsetAnchorMap,
     barlineXByQuarter,
     leftAnchorX,
-    rightAnchorX,
-    null,
-    'midpoint',
-    Number.NaN
+    rightAnchorX
   );
   var dynCanvas = document.getElementById('dynCanvas');
   var beatSplitPointsCanvas = mapScoreSplitPointsToCanvas(
@@ -3737,7 +2738,6 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
       })
       .filter(function (entry) { return Number.isFinite(entry.q) && Number.isFinite(entry.x); })
       .sort(function (a, b) { return a.q - b.q; });
-    var beatExactOnsetSample = osmdBuildBeatExactOnsetSample(onsetAnchorMap);
     var barlineMapSample = Array.from(barlineXByQuarter.entries())
       .map(function (entry) {
         return {
@@ -3784,424 +2784,8 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     window.lastRenderDiagnostics = lastRenderDiagnostics;
   }
 
-  return true;
-}
+  applyTacetSingleStaffOverlay(svg, staffIndex);
 
-async function renderConductorMusicSlice(snapshot, options) {
-  options = options || {};
-  clearScore({ keepRenderInfo: !!options.skipRenderInfo });
-  if (!snapshot || !Array.isArray(snapshot.staffSlices) || snapshot.staffSlices.length === 0) {
-    return false;
-  }
-
-  var safeFromQuarter = Number(snapshot.fromQuarter);
-  var safeNumQuarters = Math.max(1, Number(snapshot.numQuarters) || 0);
-  var token = ++osmdRenderEpoch;
-
-  var xmlBuild = osmdBuildConductorSliceMusicXml(
-    snapshot.staffSlices,
-    safeFromQuarter,
-    safeNumQuarters,
-    snapshot.barlinesQ || []
-  );
-  var xml = xmlBuild && xmlBuild.xml ? xmlBuild.xml : '';
-  if (!xml) {
-    throw new Error('Conductor XML generation failed.');
-  }
-  var timeSignatureStartsQ = Array.isArray(xmlBuild.timeSignatureStartsQ) ? xmlBuild.timeSignatureStartsQ : [];
-
-  var osmd = ensureOsmdInstance(scoreElement);
-  osmd.Zoom = 1;
-  osmd.setOptions({
-    backend: 'svg',
-    autoResize: false,
-    drawTitle: false,
-    drawSubtitle: false,
-    drawComposer: false,
-    drawPartNames: true,
-    drawPartAbbreviations: true,
-    drawMeasureNumbers: false,
-    renderSingleHorizontalStaffline: true,
-    stretchLastSystemLine: false,
-  });
-  osmdDisableMultiRestGeneration(osmd);
-  osmdApplyConductorSpacingRules(osmd);
-
-  await osmd.load(xml);
-  if (token !== osmdRenderEpoch) {
-    return false;
-  }
-  osmd.render();
-  if (typeof window.ensureOsmdStemRulesPatchedFromInstance === 'function') {
-    var patchedStemRules = false;
-    try {
-      patchedStemRules = !!window.ensureOsmdStemRulesPatchedFromInstance(osmd, {
-        extraStemLengthInSpaces: 0.0,
-        applyToUnbeamed: true,
-        applyToBeams: true,
-        debug: false,
-      });
-    } catch (stemPatchError) {
-      // eslint-disable-next-line no-console
-      console.warn('Stem rules runtime patch failed:', stemPatchError);
-    }
-    if (patchedStemRules) {
-      osmd.render();
-    }
-  }
-  if (token !== osmdRenderEpoch) {
-    return false;
-  }
-
-  var svg = scoreElement ? scoreElement.querySelector('svg') : null;
-  if (!svg) {
-    throw new Error('OSMD did not create an SVG output.');
-  }
-  applyFixedScoreSvgStyle(svg);
-
-  var conductorDetected = osmdDetectConductorLayout(svg);
-  var layout = conductorDetected.layout || osmdDetectLayout(svg);
-  if (osmdUseAdaptiveViewBoxStretch) {
-    osmdApplyFullWidthViewBox(svg, layout);
-  } else {
-    osmdAlignViewBoxToStaffLeft(svg, layout);
-  }
-  applyFixedScoreSvgStyle(svg);
-  conductorDetected = osmdDetectConductorLayout(svg);
-  layout = conductorDetected.layout || layout;
-  osmdSetBaseOffsetForConductorFirstStaff(svg, layout);
-  applyScoreSvgTranslate(svg, 0);
-
-  var refIndex = Math.max(0, Math.min(
-    Number(snapshot.referenceStaffIndex) || 0,
-    snapshot.staffSlices.length - 1
-  ));
-  var referenceSlice = snapshot.staffSlices[refIndex] || snapshot.staffSlices[0];
-  var referenceEvents = Array.isArray(referenceSlice.events) ? referenceSlice.events : [];
-  var staffBands = Array.isArray(conductorDetected.staffBands) ? conductorDetected.staffBands : [];
-  var referenceBand = staffBands[refIndex]
-    ? staffBands[refIndex]
-    : (staffBands.length ? staffBands[0] : null);
-  var barlineDetectLayout = referenceBand ? {
-    topY: referenceBand.topY,
-    bottomY: referenceBand.bottomY,
-    staffLeftX: layout.staffLeftX,
-    staffRightX: layout.staffRightX,
-  } : layout;
-
-  var detectedBarlineXs = osmdDetectBarlineXs(svg, barlineDetectLayout);
-  var onsetAnchorMap = new Map();
-  var onsetBarSelection = [];
-  var beatExactOnsetByQ = new Map();
-  var beatExactCandidateXsByQ = new Map();
-  var hasPerStaffBands = staffBands.length >= snapshot.staffSlices.length && snapshot.staffSlices.length > 0;
-  if (hasPerStaffBands) {
-    var staffOnsetMaps = snapshot.staffSlices.map(function (staffSlice, staffIdx) {
-      var staffEvents = staffSlice && Array.isArray(staffSlice.events) ? staffSlice.events : [];
-      var staffBand = staffBands[staffIdx] || null;
-      return osmdBuildOnsetAnchorMap(
-        svg,
-        staffEvents,
-        safeFromQuarter,
-        safeNumQuarters,
-        staffBand
-      );
-    });
-    beatExactCandidateXsByQ = osmdCollectConductorBeatExactCandidateXs(
-      staffOnsetMaps,
-      safeFromQuarter,
-      safeNumQuarters
-    );
-    beatExactOnsetByQ = osmdCollectConductorBeatExactAnchors(
-      staffOnsetMaps,
-      safeFromQuarter,
-      safeNumQuarters
-    );
-    var mergedOnsetAnchors = osmdBuildConductorOnsetAnchorsByMostDetailedBar(
-      staffOnsetMaps,
-      snapshot.staffSlices,
-      snapshot.barlinesQ || [],
-      safeFromQuarter,
-      safeNumQuarters,
-      refIndex
-    );
-    if (mergedOnsetAnchors && mergedOnsetAnchors.map instanceof Map) {
-      onsetAnchorMap = mergedOnsetAnchors.map;
-    }
-    if (mergedOnsetAnchors && Array.isArray(mergedOnsetAnchors.perBarSelection)) {
-      onsetBarSelection = mergedOnsetAnchors.perBarSelection.slice();
-    }
-    if ((!onsetAnchorMap || onsetAnchorMap.size === 0) && staffOnsetMaps[refIndex] instanceof Map) {
-      onsetAnchorMap = staffOnsetMaps[refIndex];
-    }
-  } else {
-    onsetAnchorMap = osmdBuildOnsetAnchorMap(
-      svg,
-      referenceEvents,
-      safeFromQuarter,
-      safeNumQuarters,
-      referenceBand
-    );
-  }
-  if (beatExactOnsetByQ instanceof Map && beatExactOnsetByQ.size) {
-    beatExactOnsetByQ.forEach(function (x, key) {
-      var q = Number(key);
-      var nx = Number(x);
-      if (!Number.isFinite(nx) || !Number.isFinite(q)) {
-        return;
-      }
-      // Keep per-bar selected-staff anchors primary.
-      // Use all-staff beat median only when this beat is otherwise missing.
-      var keysToDelete = [];
-      var existingXs = [];
-      onsetAnchorMap.forEach(function (_value, mapKey) {
-        var mapQ = Number(mapKey);
-        var mapX = Number(onsetAnchorMap.get(mapKey));
-        if (!Number.isFinite(mapQ)) {
-          return;
-        }
-        if (Math.abs(mapQ - q) <= 1e-3) {
-          keysToDelete.push(mapKey);
-          if (Number.isFinite(mapX)) {
-            existingXs.push(mapX);
-          }
-        }
-      });
-      var chosenX = nx;
-      if (existingXs.length) {
-        existingXs.sort(function (a, b) { return a - b; });
-        chosenX = Number(existingXs[Math.floor((existingXs.length - 1) / 2)]);
-      }
-      keysToDelete.forEach(function (mapKey) {
-        onsetAnchorMap.delete(mapKey);
-      });
-      onsetAnchorMap.set(quarterKey(q), chosenX);
-    });
-  }
-  var timeSigBoxes = osmdDetectTimeSignatureBoxes(svg);
-  var timeSignatureBoundsByQuarter = osmdBuildTimeSignatureBoundsByQuarter(timeSignatureStartsQ, timeSigBoxes);
-  var firstOnsetAnchor = osmdFindFirstOnsetAnchor(
-    onsetAnchorMap,
-    Number(safeFromQuarter),
-    Number(safeFromQuarter) + Math.max(1, Math.ceil(safeNumQuarters - 1e-9))
-  );
-  var startAttributeStaffIndex = refIndex;
-  if (onsetBarSelection.length) {
-    var firstBarSelectionStaff = Number(onsetBarSelection[0].staffIndex);
-    if (
-      Number.isFinite(firstBarSelectionStaff) &&
-      firstBarSelectionStaff >= 0 &&
-      firstBarSelectionStaff < staffBands.length
-    ) {
-      startAttributeStaffIndex = Math.floor(firstBarSelectionStaff);
-    }
-  }
-  var startAttributeBand = staffBands[startAttributeStaffIndex] || referenceBand;
-  var startAttributeRightX = osmdDetectInitialAttributeRightX(
-    svg,
-    startAttributeBand,
-    layout,
-    firstOnsetAnchor.x
-  );
-  var leftAnchorX = Number.isFinite(firstOnsetAnchor.x) ? Number(firstOnsetAnchor.x) : Number(layout.leftX);
-  if (!Number.isFinite(leftAnchorX)) {
-    leftAnchorX = Number(layout.staffLeftX);
-  }
-  var effectiveStartAnchorX = leftAnchorX;
-  if (Number.isFinite(startAttributeRightX)) {
-    effectiveStartAnchorX = Math.max(effectiveStartAnchorX, startAttributeRightX + 2);
-  }
-  var rightAnchorX = osmdDetectFinalBarlineXStrict(detectedBarlineXs);
-  if (!Number.isFinite(rightAnchorX)) {
-    throw new Error('Split-point error: final barline was not detected.');
-  }
-  if (rightAnchorX <= effectiveStartAnchorX + 1) {
-    throw new Error('Split-point error: final barline is not to the right of the first split point.');
-  }
-
-  var totalQuarterBeats = Math.max(1, Math.ceil(safeNumQuarters - 1e-9));
-  var endQuarter = Number(safeFromQuarter) + totalQuarterBeats;
-  var barlineXByQuarter = osmdMapDetectedBarlinesByQuarter(
-    detectedBarlineXs,
-    snapshot.barlinesQ || [],
-    Number(safeFromQuarter),
-    endQuarter,
-    effectiveStartAnchorX,
-    rightAnchorX
-  );
-  var beatSplitPoints = buildBeatSplitPointsForOsmd(
-    safeFromQuarter,
-    safeNumQuarters,
-    referenceEvents,
-    snapshot.barlinesQ || [],
-    timeSignatureBoundsByQuarter,
-    onsetAnchorMap,
-    barlineXByQuarter,
-    Number(layout.staffLeftX),
-    rightAnchorX,
-    beatExactCandidateXsByQ,
-    'onset',
-    startAttributeRightX
-  );
-  (snapshot.barlinesQ || []).forEach(function (barQ) {
-    var nq = normalizeQuarterBoundary(barQ);
-    if (!Number.isFinite(nq)) {
-      return;
-    }
-    var splitIndex = Math.round(nq - Number(safeFromQuarter));
-    if (splitIndex < 0 || splitIndex >= beatSplitPoints.length) {
-      return;
-    }
-    var splitX = Number(beatSplitPoints[splitIndex]);
-    if (!Number.isFinite(splitX)) {
-      return;
-    }
-    barlineXByQuarter.set(quarterKey(nq), splitX);
-  });
-  var dynCanvas = document.getElementById('dynCanvas');
-  var beatSplitPointsCanvas = mapScoreSplitPointsToCanvas(beatSplitPoints, svg, dynCanvas);
-  var xForQuarter = buildQuarterInterpolatorFromSplitPointsForOsmd(safeFromQuarter, beatSplitPoints);
-  var xForQuarterBarline = function (q) {
-    var nq = normalizeQuarterBoundary(q);
-    var key = quarterKey(nq);
-    if (barlineXByQuarter.has(key)) {
-      return Number(barlineXByQuarter.get(key));
-    }
-    if (Math.abs(nq - endQuarter) <= 1e-6) {
-      return Number(beatSplitPoints[beatSplitPoints.length - 1]);
-    }
-    return xForQuarter(nq);
-  };
-
-  osmdLayout.svg = svg;
-  osmdLayout.staffLeftX = Number(layout.staffLeftX);
-  osmdLayout.staffRightX = Number(layout.staffRightX);
-  osmdLayout.leftX = Number.isFinite(beatSplitPoints[0]) ? beatSplitPoints[0] : leftAnchorX;
-  osmdLayout.rightX = Number.isFinite(beatSplitPoints[beatSplitPoints.length - 1])
-    ? beatSplitPoints[beatSplitPoints.length - 1]
-    : rightAnchorX;
-  osmdLayout.topY = Number(layout.topY);
-  osmdLayout.bottomY = Number(layout.bottomY);
-  osmdLayout.dynamicsFromQuarter = safeFromQuarter;
-  osmdLayout.dynamicsNumQuarters = safeNumQuarters;
-  osmdLayout.dynamicsBeatSplitPoints = beatSplitPoints;
-  osmdLayout.dynamicsBeatSplitPointsCanvas = beatSplitPointsCanvas;
-  osmdLayout.dynamicsXForQuarter = xForQuarter;
-
-  if (!options.skipDynamics) {
-    drawDynamicsForExactSlice(
-      safeFromQuarter,
-      safeNumQuarters,
-      xForQuarter,
-      beatSplitPoints,
-      beatSplitPointsCanvas
-    );
-  }
-  if (!options.skipPlayback) {
-    drawAndAnimatePlaybarTimeMapped(
-      safeFromQuarter,
-      safeNumQuarters,
-      xForQuarter,
-      null,
-      referenceEvents,
-      [],
-      beatSplitPoints,
-      snapshot.barlinesQ || [],
-      xForQuarterBarline
-    );
-  }
-
-  if (!options.skipRenderInfo) {
-    setRenderInfo(
-      'Conductor | all staves ' + snapshot.staffSlices.length +
-      ' | from quarter ' + Math.floor(safeFromQuarter) +
-      ' | length ' + Math.floor(safeNumQuarters) +
-      ' | transpose ' + (transposeSemitones >= 0 ? '+' : '') + transposeSemitones + ' st' +
-      ' | OSMD engraving' +
-      ' | spacing: ' + spacingMode +
-      ' | font: ' + selectedScoreFontName
-    );
-  }
-
-  if (!options.skipDiagnostics) {
-    var onsetAnchorSample = Array.from(onsetAnchorMap.entries())
-      .map(function (entry) {
-        return {
-          q: roundForReport(Number(entry[0])),
-          x: roundForReport(Number(entry[1])),
-        };
-      })
-      .filter(function (entry) { return Number.isFinite(entry.q) && Number.isFinite(entry.x); })
-      .sort(function (a, b) { return a.q - b.q; });
-    var beatExactOnsetSample = osmdBuildBeatExactOnsetSample(onsetAnchorMap);
-    var barlineMapSample = Array.from(barlineXByQuarter.entries())
-      .map(function (entry) {
-        return {
-          q: roundForReport(Number(entry[0])),
-          x: roundForReport(Number(entry[1])),
-        };
-      })
-      .filter(function (entry) { return Number.isFinite(entry.q) && Number.isFinite(entry.x); })
-      .sort(function (a, b) { return a.q - b.q; });
-    var onsetBarSelectionSample = (onsetBarSelection || []).map(function (entry) {
-      var selectedIdx = Math.floor(Number(entry && entry.staffIndex));
-      var selectedSlice = snapshot.staffSlices[selectedIdx] || null;
-      return {
-        startQ: roundForReport(Number(entry && entry.startQ)),
-        endQ: roundForReport(Number(entry && entry.endQ)),
-        staffIndex: Number.isFinite(selectedIdx) ? selectedIdx : null,
-        staffName: selectedSlice ? String(selectedSlice.staffName || '') : '',
-        mappedOnsets: Number(entry && entry.mappedOnsets) || 0,
-        eventOnsets: Number(entry && entry.eventOnsets) || 0,
-        minAnchorX: roundForReport(Number(entry && entry.minAnchorX)),
-        copiedAnchors: Number(entry && entry.copiedAnchors) || 0,
-      };
-    });
-    var startAttributeSlice = snapshot.staffSlices[startAttributeStaffIndex] || referenceSlice;
-    lastRenderDiagnostics = {
-      timestamp: new Date().toISOString(),
-      mode: 'conductor',
-      staffCount: snapshot.staffSlices.length,
-      referenceStaffIndex: refIndex,
-      referenceStaffName: referenceSlice ? String(referenceSlice.staffName || '') : '',
-      onsetAnchorStrategy: hasPerStaffBands
-        ? 'per-bar-most-detailed-staff'
-        : 'single-reference-staff-fallback',
-      onsetBarSelection: onsetBarSelectionSample,
-      fromQuarter: roundForReport(safeFromQuarter),
-      numQuarters: roundForReport(safeNumQuarters),
-      transposeSemitones: transposeSemitones,
-      spacingMode: spacingMode,
-      scoreFont: selectedScoreFontName,
-      barlinesQ: (snapshot.barlinesQ || []).map(function (q) {
-        return roundForReport(normalizeQuarterBoundary(q));
-      }),
-      resolvedBarlines: (snapshot.barlinesQ || []).map(function (q) {
-        var nq = normalizeQuarterBoundary(q);
-          return { quarterQ: roundForReport(nq), x: roundForReport(xForQuarterBarline(nq)) };
-        }),
-      detectedBarlineXs: (detectedBarlineXs || []).map(roundForReport),
-      barlineMapSample: barlineMapSample.slice(0, 40),
-      onsetAnchorSample: onsetAnchorSample.slice(0, 40),
-      beatExactOnsetSample: beatExactOnsetSample.slice(0, 40),
-      startAttributeStaffIndex: startAttributeStaffIndex,
-      startAttributeStaffName: startAttributeSlice ? String(startAttributeSlice.staffName || '') : '',
-      startAttributeRightX: roundForReport(startAttributeRightX),
-      firstOnsetAnchorX: roundForReport(firstOnsetAnchor.x),
-      leftAnchorX: roundForReport(leftAnchorX),
-      effectiveStartAnchorX: roundForReport(effectiveStartAnchorX),
-      rightAnchorX: roundForReport(rightAnchorX),
-      beatSplitPoints: beatSplitPoints.map(roundForReport),
-      staffLineTopY: roundForReport(osmdLayout.topY),
-      staffLineBottomY: roundForReport(osmdLayout.bottomY),
-      staffLeftX: roundForReport(osmdLayout.staffLeftX),
-      staffRightX: roundForReport(osmdLayout.staffRightX),
-      engravingEngine: 'OSMD',
-    };
-    window.lastRenderDiagnostics = lastRenderDiagnostics;
-  }
-
-  applyTacetConductorOverlays(svg, staffBands);
   return true;
 }
 
@@ -4214,31 +2798,21 @@ async function renderPhraseSnapshot(snapshot, options) {
     transposeSemitones = snapshot.transposeSemitones;
     syncTransposeInputControl();
   }
-  var commonOptions = {
-    skipDynamics: !!options.skipDynamics,
-    skipPlayback: !!options.skipPlayback,
-    skipRenderInfo: !!options.skipRenderInfo,
-    skipDiagnostics: !!options.skipDiagnostics,
-  };
-  var ok = false;
-  if (snapshot.mode === 'conductor') {
-    ok = await renderConductorMusicSlice(snapshot, commonOptions);
-  } else {
-    ok = await renderMusicSlice(
-      snapshot.preparedEvents,
-      snapshot.fromQuarter,
-      snapshot.numQuarters,
-      snapshot.staffIndex,
-      snapshot.barlinesQ,
-      {
-        skipDynamics: commonOptions.skipDynamics,
-        skipPlayback: commonOptions.skipPlayback,
-        skipRenderInfo: commonOptions.skipRenderInfo,
-        skipDiagnostics: commonOptions.skipDiagnostics,
-        keyChanges: snapshot.keyChanges,
-      }
-    );
-  }
+  var ok = await renderMusicSlice(
+    snapshot.preparedEvents,
+    snapshot.fromQuarter,
+    snapshot.numQuarters,
+    snapshot.staffIndex,
+    snapshot.barlinesQ,
+    {
+      skipDynamics: !!options.skipDynamics,
+      skipPlayback: !!options.skipPlayback,
+      skipRenderInfo: !!options.skipRenderInfo,
+      skipDiagnostics: !!options.skipDiagnostics,
+      keyChanges: snapshot.keyChanges,
+      clefChanges: snapshot.clefChanges || null,
+    }
+  );
   if (!options.skipPreviewOnTop) {
     ensurePreviewOnTop();
   }
@@ -4262,6 +2836,7 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
   var savedMainScoreElement = mainScoreElement;
   var savedRenderInfoText = readElementText('renderInfo');
   var savedDiagnostics = lastRenderDiagnostics;
+  var savedTransposeSemitones = transposeSemitones;
   var savedOsmdInstance = osmdInstance;
   var savedOsmdContainerRef = osmdContainerRef;
   var savedOsmdLayout = Object.assign({}, osmdLayout);
@@ -4303,6 +2878,8 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
     osmdContainerRef = savedOsmdContainerRef;
     osmdLayout = savedOsmdLayout;
     lastRenderDiagnostics = savedDiagnostics;
+    transposeSemitones = savedTransposeSemitones;
+    syncTransposeInputControl();
     setRenderInfo(savedRenderInfoText);
     if (tempContainer.parentNode) {
       tempContainer.parentNode.removeChild(tempContainer);
@@ -4320,20 +2897,12 @@ async function showPhrasePreview(snapshot) {
   removePhrasePreviewOverlay(false);
   recolorSvgMonochrome(svg, phrasePreviewColor);
   applyFixedScoreSvgStyle(svg);
-  if (snapshot && snapshot.mode === 'conductor') {
-    var previewDetected = osmdDetectConductorLayout(svg);
-    var previewLayout = (previewDetected && previewDetected.layout) ? previewDetected.layout : osmdDetectLayout(svg);
-    osmdSetBaseOffsetForConductorFirstStaff(svg, previewLayout);
-  } else {
-    osmdSetBaseOffsetForLowEb(svg, osmdDetectLayout(svg));
-  }
+  osmdSetBaseOffsetForLowEb(svg, osmdDetectLayout(svg));
   svg.style.position = 'absolute';
   svg.style.left = '0';
   svg.style.top = '0';
   svg.style.pointerEvents = 'none';
   svg.style.zIndex = '5';
-  // Keep conductor swap logic aligned with index3 preview flow, but hide preview overlay.
-  svg.style.opacity = '0';
   applyScoreSvgTranslate(svg, -phrasePreviewOffsetY);
   mainScoreElement.appendChild(svg);
 
@@ -4357,9 +2926,6 @@ async function commitPhraseSwapTargetSnapshot(snapshot) {
 }
 
 function redrawDynamicsOnly() {
-  if (phrasePreviewAwaitingSwap || phraseSwapInProgress) {
-    return;
-  }
   if (!osmdLayout.dynamicsXForQuarter) {
     return;
   }
@@ -4381,64 +2947,32 @@ async function renderMusicFromSnakeCore() {
     return false;
   }
 
-  if (pendingEatenRender) {
-    updateLockedSliceFromSnake();
-  }
-
-  if (lockedFromQuarter === null || lockedNumQuarters === null) {
-    updateLockedSliceFromSnake();
-  }
-
-  var fromQuarter =
-    debugOverrideFromQuarter !== null ? debugOverrideFromQuarter : lockedFromQuarter;
-  if (fromQuarter === null) {
-    fromQuarter = calculateFromQuarterFromSnake();
-  }
-  var numQuarters =
-    debugOverrideNumQuarters !== null ? debugOverrideNumQuarters : lockedNumQuarters;
-  if (!Number.isFinite(numQuarters) || numQuarters <= 0) {
-    numQuarters = calculateNumQuartersFromSnake();
-  }
-
-  if (fromQuarter === null || numQuarters <= 0) {
+  var currentDescriptor = readRoomStateCurrentPhrase();
+  if (!currentDescriptor) {
     refreshDebugSliceInputs();
     return false;
   }
 
-  refreshDebugSliceInputs(fromQuarter, numQuarters);
+  lockedFromQuarter = currentDescriptor.fromQuarter;
+  lockedNumQuarters = currentDescriptor.numQuarters;
+  transposeSemitones = currentDescriptor.transposeSemitones;
+  syncTransposeInputControl();
+  refreshDebugSliceInputs(currentDescriptor.fromQuarter, currentDescriptor.numQuarters);
 
-  var snapshot = buildConductorPhraseSnapshot(fromQuarter, numQuarters);
+  var staffIndex = selectedStaff();
+  var snapshot = buildPhraseSnapshot(
+    currentDescriptor.fromQuarter,
+    currentDescriptor.numQuarters,
+    staffIndex
+  );
   if (!snapshot) {
     clearEatenRenderPendingState();
     return false;
   }
 
-  if (pendingEatenRender && currentPhraseSnapshot) {
-    // Suppress spurious swaps (e.g. triggered by JOIN/BACK room refresh) when
-    // the incoming snapshot is identical to what is already showing.
-    if (snapshot.fromQuarter === currentPhraseSnapshot.fromQuarter &&
-        snapshot.numQuarters === currentPhraseSnapshot.numQuarters &&
-        snapshot.transposeSemitones === currentPhraseSnapshot.transposeSemitones) {
-      if (playbarAnimationFrame) {
-        // Playbar already running — nothing to do, suppress spurious swap.
-        clearEatenRenderPendingState();
-        return true;
-      }
-      // Playbar stopped (e.g. re-joined room mid-phrase) — fall through to
-      // re-render in place so the playbar restarts without a swap animation.
-    }
-    var previewShown = await showPhrasePreview(snapshot);
-    if (!previewShown) {
-      stopPlaybarMotion();
-      await renderPhraseSnapshot(snapshot);
-      currentPhraseSnapshot = snapshot;
-      clearEatenRenderPendingState();
-      return true;
-    }
-    clearEatenRenderPendingState();
-    if (!playbarAnimationFrame) {
-      startPhraseSwapAnimation(serverNowMs());
-    }
+  var alreadyCurrent = phraseDescriptorEqualsSnapshot(currentDescriptor, currentPhraseSnapshot);
+  if (alreadyCurrent && playbarAnimationFrame) {
+    await syncAuthoritativeCandidatePreview(currentDescriptor);
     return true;
   }
 
@@ -4446,6 +2980,8 @@ async function renderMusicFromSnakeCore() {
   await renderPhraseSnapshot(snapshot);
   currentPhraseSnapshot = snapshot;
   clearEatenRenderPendingState();
+  applyQueuedDynamicsAtPhraseStart(true);
+  await syncAuthoritativeCandidatePreview(currentDescriptor);
   return true;
 }
 
@@ -4460,5 +2996,20 @@ function renderMusicFromSnake() {
   });
   return osmdRenderQueue;
 }
+
+function handleRoomStateUpdate() {
+  if (typeof applyRoomStateDynamics === 'function') {
+    applyRoomStateDynamics(false);
+  }
+  var currentDescriptor = readRoomStateCurrentPhrase();
+  if (playbarAnimationFrame && currentPhraseSnapshot && currentDescriptor) {
+    // Keep commit strictly on boundary; only refresh candidate preview while running.
+    syncAuthoritativeCandidatePreview(currentDescriptor);
+    return;
+  }
+  renderMusicFromSnake();
+}
+
+window.handleRoomStateUpdate = handleRoomStateUpdate;
 
 loadTannhauserMxl();

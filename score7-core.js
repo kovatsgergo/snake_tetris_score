@@ -107,10 +107,20 @@ var lastServerMessageTimeMs = null;
 var serverClockOffsetMs = 0;
 var bestClockSyncRttMs = Number.POSITIVE_INFINITY;
 var hasClockSync = false;
-var transportEpochMs = Number.NaN;
-var transportRevision = 0;
-var pendingTransportState = null;
-var pendingPhraseStartAnchorQuarters = Number.NaN;
+var transportStateVersion = 0;
+var transportRunning = false;
+var transportBaseQuarters = 0;
+var transportStartedAtMs = Number.NaN;
+var roomClockQuarterCounter = Number.NaN;
+var roomClockBeatInPhrase = 1;
+var roomClockBeatsPerPhrase = 1;
+var roomClockBpm = 60;
+var roomClockServerMs = Number.NaN;
+var pendingRoomBoundaryCount = 0;
+var roomStateVersion = 0;
+var roomStateSnapshot = null;
+var appliedRoomDynamicsVersion = 0;
+var queuedDynamics = null;
 var tempoLevelsBpm = [50, 65, 80, 95];
 var METRONOME_FLASH_MS = 90;
 var phrasePreviewSnapshot = null;
@@ -242,7 +252,10 @@ function ensureScoreLayeringContainer() {
   container.style.position = 'relative';
   container.style.overflow = 'hidden';
   container.style.textAlign = 'left';
-  container.style.width = full_Width + 'px';
+  container.style.width = '100%';
+  container.style.maxWidth = full_Width + 'px';
+  container.style.margin = '0 auto';
+  container.style.boxSizing = 'border-box';
   container.style.height = full_Height + 'px';
 }
 
@@ -338,8 +351,76 @@ window.setAutoTempo = setAutoTempo;
 
 function setAutoTranspose(enabled) {
   autoTransposeEnabled = !!enabled;
+  if (!autoTransposeEnabled) {
+    var dropdown = document.getElementById('debugTransposeSemitones');
+    if (dropdown) {
+      setTransposeSemitones(dropdown.value);
+      return;
+    }
+  }
+  renderMusicFromSnake();
 }
 window.setAutoTranspose = setAutoTranspose;
+
+function normalizeManualFromQuarter(value) {
+  var rawFrom = parseOptionalNonNegativeInt(value);
+  if (rawFrom === null) {
+    return null;
+  }
+  if (tannhauserScore) {
+    var totalQ = Number(tannhauserScore.getTotalQuarters(selectedStaff()));
+    if (Number.isFinite(totalQ) && totalQ > 0) {
+      rawFrom = applyScoreLoopMode(rawFrom, totalQ);
+    }
+  }
+  return rawFrom;
+}
+
+function normalizeManualNumQuarters(value) {
+  var rawNum = parseOptionalNonNegativeInt(value);
+  if (rawNum === null) {
+    return null;
+  }
+  return Math.max(1, rawNum);
+}
+
+function setManualFromQuarter(value) {
+  debugOverrideFromQuarter = normalizeManualFromQuarter(value);
+  refreshDebugSliceInputs();
+  renderMusicFromSnake();
+}
+window.setManualFromQuarter = setManualFromQuarter;
+
+function setManualNumQuarters(value) {
+  debugOverrideNumQuarters = normalizeManualNumQuarters(value);
+  refreshDebugSliceInputs();
+  renderMusicFromSnake();
+}
+window.setManualNumQuarters = setManualNumQuarters;
+
+function setAutoFromQuarter(enabled) {
+  autoFromQuarterEnabled = !!enabled;
+  if (!autoFromQuarterEnabled) {
+    var fromInput = document.getElementById('debugFromQuarter');
+    setManualFromQuarter(fromInput ? fromInput.value : debugOverrideFromQuarter);
+    return;
+  }
+  refreshDebugSliceInputs();
+  renderMusicFromSnake();
+}
+window.setAutoFromQuarter = setAutoFromQuarter;
+
+function setAutoNumQuarters(enabled) {
+  autoNumQuartersEnabled = !!enabled;
+  if (!autoNumQuartersEnabled) {
+    var numInput = document.getElementById('debugNumQuarters');
+    setManualNumQuarters(numInput ? numInput.value : debugOverrideNumQuarters);
+    return;
+  }
+  refreshDebugSliceInputs();
+  renderMusicFromSnake();
+}
+window.setAutoNumQuarters = setAutoNumQuarters;
 
 function quarterRatePerSecond() {
   return Math.max(tempo, 1e-6) / 60;
@@ -425,15 +506,60 @@ function setNotemap(message) {
 
 //DYNAMICS
 function setDynamics(message) {
-  messageArray = message.split(" ");
-  dynamics = messageArray.map((val) => {
-    return Number(val);
-  });
-  // Only redraw immediately when the playbar is idle (not mid-phrase).
-  // When mid-phrase the canvas stays frozen; handleCycleBoundary flushes at phrase end.
-  if (!playbarAnimationFrame && typeof window !== 'undefined' && typeof window.redrawDynamicsOnly === 'function') {
+  // Dynamics are authoritative from ROOM_STATE only in v7.
+  void message;
+  queuedDynamics = null;
+}
+
+function parseDynamicsCsvToken(token) {
+  if (token === undefined || token === null) {
+    return null;
+  }
+  var raw = String(token).trim();
+  if (!raw || raw === '-') {
+    return null;
+  }
+  var values = raw.split(',').map(Number).filter(Number.isFinite);
+  return values.length > 0 ? values : null;
+}
+
+function applyRoomStateDynamics(force) {
+  var snapshot = roomStateSnapshot;
+  if (!snapshot) {
+    return false;
+  }
+  var version = Math.floor(Number(snapshot.dynamicsVersion));
+  var shouldApply = !!force;
+  if (Number.isFinite(version) && version > 0 && version > appliedRoomDynamicsVersion) {
+    shouldApply = true;
+  }
+  if (!shouldApply) {
+    return false;
+  }
+  var nextDynamics = parseDynamicsCsvToken(snapshot.dynamicsCsv);
+  if (!Array.isArray(nextDynamics) || nextDynamics.length === 0) {
+    if (Number.isFinite(version) && version > appliedRoomDynamicsVersion) {
+      appliedRoomDynamicsVersion = version;
+    }
+    return false;
+  }
+  dynamics = nextDynamics.slice();
+  queuedDynamics = null;
+  if (Number.isFinite(version) && version > 0) {
+    appliedRoomDynamicsVersion = version;
+  }
+  if (typeof window !== 'undefined' && typeof window.redrawDynamicsOnly === 'function') {
     window.redrawDynamicsOnly();
   }
+  return true;
+}
+
+function applyQueuedDynamicsAtPhraseStart(force) {
+  var appliedFromRoomState = applyRoomStateDynamics(force);
+  if (!appliedFromRoomState && typeof window !== 'undefined' && typeof window.redrawDynamicsOnly === 'function') {
+    window.redrawDynamicsOnly();
+  }
+  return appliedFromRoomState;
 }
 
 //RHYTHM
@@ -445,48 +571,118 @@ function serverNowMs() {
   return Date.now() + serverClockOffsetMs;
 }
 
+function blendServerClockOffset(serverMs, weight) {
+  var parsed = Number(serverMs);
+  if (!Number.isFinite(parsed)) {
+    return;
+  }
+  var candidateOffset = parsed - Date.now();
+  var blendWeight = Number(weight);
+  if (!Number.isFinite(blendWeight)) {
+    blendWeight = 0.2;
+  }
+  blendWeight = Math.max(0.01, Math.min(1, blendWeight));
+  if (!hasClockSync) {
+    serverClockOffsetMs = candidateOffset;
+    bestClockSyncRttMs = Number.POSITIVE_INFINITY;
+    hasClockSync = true;
+    return;
+  }
+  serverClockOffsetMs = serverClockOffsetMs * (1 - blendWeight) + candidateOffset * blendWeight;
+}
+
 function setServerMessageTime(serverMs) {
   var parsed = Number(serverMs);
   if (Number.isFinite(parsed)) {
     lastServerMessageTimeMs = parsed;
+    if (!hasClockSync) {
+      // Coarse first estimate until RTT-based SYNC samples arrive.
+      blendServerClockOffset(parsed, 1);
+    }
   }
 }
 
 function hasAuthoritativeTransportClock() {
-  return Number.isFinite(transportEpochMs) && Number.isFinite(transportRevision) && transportRevision > 0;
+  return Number.isFinite(transportStateVersion) && transportStateVersion > 0;
 }
 
-function normalizeTransportRevision(revision) {
-  var numeric = Number(revision);
+function normalizeTransportVersion(version) {
+  var numeric = Number(version);
   if (!Number.isFinite(numeric) || numeric <= 0) {
     return Number.NaN;
   }
   return Math.floor(numeric);
 }
 
-function highestKnownTransportRevision() {
-  var highest = Number.isFinite(transportRevision) && transportRevision > 0 ? Math.floor(transportRevision) : 0;
-  if (pendingTransportState && Number.isFinite(pendingTransportState.revision)) {
-    highest = Math.max(highest, pendingTransportState.revision);
+function normalizeTransportRunning(running) {
+  if (typeof running === 'string') {
+    var normalized = running.trim().toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes') {
+      return true;
+    }
+    if (normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no') {
+      return false;
+    }
   }
-  return highest;
+  if (typeof running === 'number') {
+    return running !== 0;
+  }
+  return !!running;
 }
 
-function applyTransportStateNow(nextEpoch, nextBpm, nextRevision) {
-  var hadEpoch = Number.isFinite(transportEpochMs);
-  var revisionAdvanced = Number.isFinite(nextRevision) && nextRevision > transportRevision;
-
-  transportEpochMs = nextEpoch;
-  if (Number.isFinite(nextRevision)) {
-    transportRevision = nextRevision;
-  } else if (transportRevision <= 0) {
-    transportRevision = 1;
+function normalizeTransportQuarters(quarters) {
+  var numeric = Number(quarters);
+  if (!Number.isFinite(numeric)) {
+    return Number.NaN;
   }
+  return Math.max(0, numeric);
+}
 
+function normalizeServerSentMs(serverSentMs, fallbackMs) {
+  var numeric = Number(serverSentMs);
+  if (!Number.isFinite(numeric)) {
+    return Number.isFinite(Number(fallbackMs)) ? Number(fallbackMs) : Date.now();
+  }
+  return numeric;
+}
+
+function transportAbsoluteQuartersAt(nowMs) {
+  if (!hasAuthoritativeTransportClock()) {
+    return Number.NaN;
+  }
+  var baseQuarters = Math.max(0, Number(transportBaseQuarters) || 0);
+  if (!transportRunning) {
+    return baseQuarters;
+  }
+  var snapshotServerMs = Number(transportStartedAtMs);
+  if (!Number.isFinite(snapshotServerMs)) {
+    return baseQuarters;
+  }
+  var now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : serverNowMs();
+  var elapsedMs = Math.max(0, now - snapshotServerMs);
+  return baseQuarters + elapsedMs * quarterRatePerSecond() / 1000;
+}
+
+function transportIsRunning() {
+  return !!transportRunning;
+}
+
+function applyTransportSnapshot(nextVersion, nextRunning, nextBpm, nextQuarters, nextServerSentMs) {
+  var hadTransport = hasAuthoritativeTransportClock();
+  var previousVersion = transportStateVersion;
+  var previousRunning = transportRunning;
+
+  transportStateVersion = nextVersion;
+  transportRunning = !!nextRunning;
+  transportBaseQuarters = Math.max(0, Number(nextQuarters) || 0);
+  transportStartedAtMs = Number(nextServerSentMs);
   tempo = nextBpm;
+  roomClockBpm = nextBpm;
+  roomClockServerMs = Number(nextServerSentMs);
+  blendServerClockOffset(nextServerSentMs, 0.15);
   updateTempoDisplay();
 
-  if (!hadEpoch || revisionAdvanced) {
+  if (!hadTransport || transportStateVersion > previousVersion || transportRunning !== previousRunning) {
     // Re-lock flash sequencing to the shared transport when a new transport is accepted.
     metronomeLastEighthIndex = null;
     metronomeQuarterUntilMs = 0;
@@ -495,79 +691,122 @@ function applyTransportStateNow(nextEpoch, nextBpm, nextRevision) {
 }
 
 function hasPendingTransportState() {
-  return !!pendingTransportState;
-}
-
-function queuePendingTransportState(nextEpoch, nextBpm, nextRevision, nextServerSent) {
-  pendingTransportState = {
-    epochMs: nextEpoch,
-    bpm: nextBpm,
-    revision: nextRevision,
-    serverSentMs: nextServerSent,
-  };
+  return false;
 }
 
 function applyPendingTransportState() {
-  if (!pendingTransportState) {
-    return false;
-  }
-  var next = pendingTransportState;
-  pendingTransportState = null;
-  applyTransportStateNow(next.epochMs, next.bpm, next.revision);
-  return true;
+  return false;
 }
 
 function setPendingPhraseStartAnchor(anchorQuarters) {
-  var numeric = Number(anchorQuarters);
-  if (!Number.isFinite(numeric)) {
-    return;
-  }
-  pendingPhraseStartAnchorQuarters = numeric;
+  void anchorQuarters;
 }
 
 function consumePendingPhraseStartAnchor() {
-  if (!Number.isFinite(pendingPhraseStartAnchorQuarters)) {
-    return Number.NaN;
-  }
-  var anchor = pendingPhraseStartAnchorQuarters;
-  pendingPhraseStartAnchorQuarters = Number.NaN;
-  return anchor;
+  return Number.NaN;
 }
 
 function setTransportState(epochMs, bpm, revision, serverSentMs) {
+  // Legacy fallback path used by older servers.
   var nextEpoch = Number(epochMs);
   var nextBpm = Number(bpm);
-  var nextRevision = normalizeTransportRevision(revision);
+  var nextRevision = normalizeTransportVersion(revision);
   var nextServerSent = Number(serverSentMs);
-  if (!Number.isFinite(nextEpoch) || !Number.isFinite(nextBpm) || nextBpm <= 0) {
+  if (!Number.isFinite(nextEpoch) || !Number.isFinite(nextBpm) || nextBpm <= 0 || !Number.isFinite(nextRevision)) {
     return;
   }
-  var knownRevision = highestKnownTransportRevision();
-  if (Number.isFinite(nextRevision) && nextRevision < knownRevision) {
+  var referenceMs = normalizeServerSentMs(nextServerSent, Date.now());
+  var nextQuarters = Math.max(0, (referenceMs - nextEpoch) * nextBpm / 60000);
+  setTransportSnapshot(nextRevision, 1, nextBpm, nextQuarters, -1, referenceMs);
+}
+
+function setTransportSnapshot(version, running, bpm, quarters, startedAtMs, serverSentMs) {
+  var nextVersion = normalizeTransportVersion(version);
+  var nextRunning = normalizeTransportRunning(running);
+  var nextBpm = Number(bpm);
+  var nextQuarters = normalizeTransportQuarters(quarters);
+  var nextServerSent = normalizeServerSentMs(serverSentMs, startedAtMs);
+  if (!Number.isFinite(nextVersion) || !Number.isFinite(nextBpm) || nextBpm <= 0 || !Number.isFinite(nextQuarters)) {
     return;
   }
-  if (!Number.isFinite(nextRevision) && pendingTransportState) {
+  if (nextVersion < transportStateVersion) {
+    return;
+  }
+  if (nextVersion === transportStateVersion && Number.isFinite(transportStartedAtMs) && nextServerSent <= transportStartedAtMs) {
     return;
   }
 
-  if (Number.isFinite(nextServerSent) && !hasClockSync) {
-    // Fast bootstrap before RTT-based SYNC stabilizes: estimate offset from
-    // server send timestamp carried by TRANSPORT.
-    serverClockOffsetMs = nextServerSent - Date.now();
-  }
+  applyTransportSnapshot(nextVersion, nextRunning, nextBpm, nextQuarters, nextServerSent);
+}
 
-  var shouldDefer =
-    !!playbarAnimationFrame &&
-    Number.isFinite(transportEpochMs) &&
-    Number.isFinite(nextRevision) &&
-    nextRevision > transportRevision;
-  if (shouldDefer) {
-    queuePendingTransportState(nextEpoch, nextBpm, nextRevision, nextServerSent);
+function setRoomClock(roomId, quarterCounter, beatInPhrase, beatsPerPhrase, bpm, serverMs) {
+  void roomId;
+  var nextQuarterCounter = Number(quarterCounter);
+  var nextBeatInPhrase = Math.floor(Number(beatInPhrase));
+  var nextBeatsPerPhrase = Math.max(1, Math.floor(Number(beatsPerPhrase) || 1));
+  var nextBpm = Number(bpm);
+  var nextServerMs = normalizeServerSentMs(serverMs, Date.now());
+  if (!Number.isFinite(nextQuarterCounter) || nextQuarterCounter < 0 || !Number.isFinite(nextBpm) || nextBpm <= 0) {
     return;
   }
+  var previousQuarterCounter = Number.isFinite(roomClockQuarterCounter)
+    ? Math.floor(Number(roomClockQuarterCounter))
+    : Number.NaN;
+  if (Number.isFinite(previousQuarterCounter)) {
+    // Ignore duplicate quarter packets; they can arrive from periodic sync probes.
+    if (nextQuarterCounter <= previousQuarterCounter) {
+      return;
+    }
+  }
+  if (nextBeatInPhrase === 1 && Number.isFinite(previousQuarterCounter) && nextQuarterCounter > previousQuarterCounter) {
+    pendingRoomBoundaryCount = Math.max(0, Math.floor(Number(pendingRoomBoundaryCount) || 0)) + 1;
+  }
+  roomClockQuarterCounter = Math.floor(nextQuarterCounter);
+  roomClockBeatInPhrase = Math.max(1, Math.min(nextBeatsPerPhrase, nextBeatInPhrase || 1));
+  roomClockBeatsPerPhrase = nextBeatsPerPhrase;
+  roomClockBpm = nextBpm;
+  roomClockServerMs = nextServerMs;
+  if (!hasClockSync) {
+    blendServerClockOffset(nextServerMs, 1);
+  }
+  if (transportStateVersion <= 0) {
+    transportStateVersion = 1;
+  }
+  transportRunning = true;
+  transportBaseQuarters = roomClockQuarterCounter;
+  transportStartedAtMs = nextServerMs;
+  if (Math.abs(nextBpm - tempo) > 1e-6) {
+    tempo = nextBpm;
+    updateTempoDisplay();
+  }
+  setBeatIndexDisplay(roomClockBeatInPhrase, roomClockBeatsPerPhrase);
+}
 
-  pendingTransportState = null;
-  applyTransportStateNow(nextEpoch, nextBpm, nextRevision);
+function setRoomState(roomId, version, paused, currentFrom, currentNum, currentTranspose, candidateFrom, candidateNum, candidateTranspose, pendingTempo, bpm, serverMs, dynamicsVersion, dynamicsCsv) {
+  void roomId;
+  var parsedVersion = Number(version);
+  if (!Number.isFinite(parsedVersion)) {
+    parsedVersion = roomStateVersion;
+  }
+  if (parsedVersion < roomStateVersion) {
+    return;
+  }
+  roomStateVersion = parsedVersion;
+  roomStateSnapshot = {
+    paused: normalizeTransportRunning(paused),
+    currentFrom: Number(currentFrom),
+    currentNum: Number(currentNum),
+    currentTranspose: Number(currentTranspose),
+    candidateFrom: Number(candidateFrom),
+    candidateNum: Number(candidateNum),
+    candidateTranspose: Number(candidateTranspose),
+    pendingTempo: Number(pendingTempo),
+    bpm: Number(bpm),
+    serverMs: normalizeServerSentMs(serverMs, Date.now()),
+    dynamicsVersion: Number(dynamicsVersion),
+    dynamicsCsv: (dynamicsCsv === undefined || dynamicsCsv === null) ? '' : String(dynamicsCsv),
+    version: parsedVersion,
+  };
 }
 
 function applyClockSyncSample(clientSentMs, serverMs, clientReceivedMs) {
@@ -577,7 +816,6 @@ function applyClockSyncSample(clientSentMs, serverMs, clientReceivedMs) {
   if (!Number.isFinite(t0) || !Number.isFinite(ts) || !Number.isFinite(t1) || t1 < t0) {
     return;
   }
-
   var rtt = t1 - t0;
   var midpoint = t0 + rtt / 2;
   var candidateOffset = ts - midpoint;
@@ -587,9 +825,8 @@ function applyClockSyncSample(clientSentMs, serverMs, clientReceivedMs) {
     hasClockSync = true;
     return;
   }
-
   if (rtt <= bestClockSyncRttMs * 1.5) {
-    serverClockOffsetMs = serverClockOffsetMs * 0.8 + candidateOffset * 0.2;
+    serverClockOffsetMs = serverClockOffsetMs * 0.85 + candidateOffset * 0.15;
     bestClockSyncRttMs = Math.min(bestClockSyncRttMs, rtt);
   }
 }
@@ -597,12 +834,19 @@ function applyClockSyncSample(clientSentMs, serverMs, clientReceivedMs) {
 window.setServerMessageTime = setServerMessageTime;
 window.applyClockSyncSample = applyClockSyncSample;
 window.setTransportState = setTransportState;
+window.setTransportSnapshot = setTransportSnapshot;
+window.setRoomClock = setRoomClock;
+window.setRoomState = setRoomState;
 window.setTempoLevels = setTempoLevels;
 window.applyPendingTransportState = applyPendingTransportState;
 window.hasPendingTransportState = hasPendingTransportState;
 window.hasAuthoritativeTransportClock = hasAuthoritativeTransportClock;
+window.transportAbsoluteQuartersAt = transportAbsoluteQuartersAt;
+window.transportIsRunning = transportIsRunning;
 window.setPendingPhraseStartAnchor = setPendingPhraseStartAnchor;
 window.consumePendingPhraseStartAnchor = consumePendingPhraseStartAnchor;
+window.applyQueuedDynamicsAtPhraseStart = applyQueuedDynamicsAtPhraseStart;
+window.applyRoomStateDynamics = applyRoomStateDynamics;
 
 function setMetronomeLedOn(ledId, isOn) {
   var led = document.getElementById(ledId);
@@ -740,11 +984,6 @@ function startPhraseSwapAnimation(nowMs) {
   var startMs = Number(nowMs) || serverNowMs();
   var quarterMs = 60000 / Math.max(tempo, 1e-6);
   var durationMs = Math.max(120, quarterMs * 0.5); // blue -> next red beat
-  if (!Number.isFinite(pendingPhraseStartAnchorQuarters) && Number.isFinite(transportEpochMs)) {
-    var startAbsoluteQuarters = (startMs - transportEpochMs) * quarterRatePerSecond() / 1000;
-    var projectedQuarterAdvance = durationMs * quarterRatePerSecond() / 1000;
-    setPendingPhraseStartAnchor(startAbsoluteQuarters + projectedQuarterAdvance);
-  }
   var previewSvg = phrasePreviewSvg;
 
   function step() {
@@ -1325,6 +1564,8 @@ var EATEN_RENDER_FALLBACK_MS = 250;
 var debugOverrideFromQuarter = null;
 var debugOverrideNumQuarters = null;
 var transposeSemitones = 0;
+var autoFromQuarterEnabled = true;
+var autoNumQuartersEnabled = true;
 var autoTransposeEnabled = true;
 var lockedFromQuarter = null;
 var lockedNumQuarters = null;
@@ -1336,6 +1577,53 @@ function setDebugStatus(message) {
   if (debugEl) {
     debugEl.innerHTML = message;
   }
+}
+
+function timingDebugInt(value) {
+  var numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return '-';
+  }
+  return String(Math.floor(numeric));
+}
+
+function timingDebugFloat(value, digits) {
+  var numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return '-';
+  }
+  var precision = Number.isFinite(Number(digits)) ? Math.max(0, Math.floor(Number(digits))) : 3;
+  return numeric.toFixed(precision);
+}
+
+function updateTimingDebugLine(payload) {
+  var timingEl = document.getElementById('timingDebug');
+  if (!timingEl) {
+    return;
+  }
+  payload = payload || {};
+  var currentFrom = currentPhraseSnapshot ? Number(currentPhraseSnapshot.fromQuarter) : Number.NaN;
+  var currentLen = currentPhraseSnapshot ? Number(currentPhraseSnapshot.numQuarters) : Number.NaN;
+  var pendingFrom = phrasePreviewSnapshot ? Number(phrasePreviewSnapshot.fromQuarter) : Number.NaN;
+  var pendingLen = phrasePreviewSnapshot ? Number(phrasePreviewSnapshot.numQuarters) : Number.NaN;
+  var line = [
+    'st=' + String(payload.state || '-'),
+    'rq=' + timingDebugInt(payload.roomQuarter),
+    'rb=' + timingDebugInt(payload.roomBeat) + '/' + timingDebugInt(payload.roomBeats),
+    'abs=' + timingDebugFloat(payload.absoluteQuarters, 3),
+    'prog=' + timingDebugFloat(payload.progressedQuarters, 3),
+    'anc=' + timingDebugFloat(payload.anchorQuarters, 3),
+    'frm=' + timingDebugInt(payload.fromQuarter),
+    'len=' + timingDebugInt(payload.numQuarters),
+    'cur=' + timingDebugInt(currentFrom) + '+' + timingDebugInt(currentLen),
+    'cand=' + timingDebugInt(pendingFrom) + '+' + timingDebugInt(pendingLen),
+    'swap=' + (phraseSwapInProgress ? '1' : '0') + '/' + (phrasePreviewAwaitingSwap ? '1' : '0'),
+    'dynQ=' + (Array.isArray(queuedDynamics) ? '1' : '0'),
+    'dyn0=' + timingDebugInt(Array.isArray(dynamics) && dynamics.length ? dynamics[0] : Number.NaN),
+    'off=' + timingDebugFloat(serverClockOffsetMs, 1),
+    'sync=' + (hasClockSync ? '1' : '0'),
+  ].join(' | ');
+  timingEl.textContent = line;
 }
 
 function setRenderInfo(message) {
@@ -1432,6 +1720,7 @@ function buildCaseReportData() {
     },
     ui: {
       renderInfo: readElementText('renderInfo'),
+      timingDebug: readElementText('timingDebug'),
       debug: readElementText('debug'),
     },
     diagnostics: compactDiagnostics,
@@ -1479,6 +1768,7 @@ async function copyCaseReportToClipboard() {
 }
 
 window.copyCaseReportToClipboard = copyCaseReportToClipboard;
+window.updateTimingDebugLine = updateTimingDebugLine;
 
 function parseOptionalNonNegativeInt(value) {
   if (value === null || value === undefined || value === '') {
@@ -1519,7 +1809,7 @@ window.setTransposeSemitones = setTransposeSemitones;
 function refreshDebugSliceInputs(renderFromQuarter, renderNumQuarters) {
   var fromInput = document.getElementById('debugFromQuarter');
   if (fromInput) {
-    var fromValue = debugOverrideFromQuarter;
+    var fromValue = autoFromQuarterEnabled ? null : debugOverrideFromQuarter;
     if (fromValue === null || fromValue === undefined) {
       if (Number.isFinite(renderFromQuarter)) {
         fromValue = Math.floor(renderFromQuarter);
@@ -1532,7 +1822,7 @@ function refreshDebugSliceInputs(renderFromQuarter, renderNumQuarters) {
 
   var numInput = document.getElementById('debugNumQuarters');
   if (numInput) {
-    var numValue = debugOverrideNumQuarters;
+    var numValue = autoNumQuartersEnabled ? null : debugOverrideNumQuarters;
     if (numValue === null || numValue === undefined) {
       if (Number.isFinite(renderNumQuarters)) {
         numValue = Math.floor(renderNumQuarters);
@@ -1545,15 +1835,8 @@ function refreshDebugSliceInputs(renderFromQuarter, renderNumQuarters) {
 }
 
 function setDebugSliceControls(fromQuarterValue, numQuartersValue) {
-  var rawFrom = parseOptionalNonNegativeInt(fromQuarterValue);
-  if (rawFrom !== null && tannhauserScore) {
-    var totalQ = tannhauserScore.getTotalQuarters(selectedStaff());
-    if (totalQ > 0) {
-      rawFrom = applyScoreLoopMode(rawFrom, totalQ);
-    }
-  }
-  debugOverrideFromQuarter = rawFrom;
-  debugOverrideNumQuarters = parseOptionalNonNegativeInt(numQuartersValue);
+  debugOverrideFromQuarter = normalizeManualFromQuarter(fromQuarterValue);
+  debugOverrideNumQuarters = normalizeManualNumQuarters(numQuartersValue);
   refreshDebugSliceInputs();
   renderMusicFromSnake();
 }

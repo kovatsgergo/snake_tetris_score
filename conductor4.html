@@ -54,7 +54,7 @@
           </div>
           <div id="metronomeWrap" class="top-control-block metronome-wrap">
             <strong>Tempo:</strong>
-            <span id="bpmValue">40 BPM</span>
+            <span id="bpmValue" class="bpm-value">40 BPM</span>
             <strong>Beat:</strong>
             <span id="metBeatIndex" class="met-beat-index">1</span>
             <strong>Metronome:</strong>
@@ -380,8 +380,10 @@
     } else if (event.data.startsWith('tempo')) {
       document.getElementById('tempo').innerHTML =
         event.data;
-      var tempoParts = event.data.trim().split(/\s+/);
-      setTempo(tempoParts.length > 1 ? tempoParts[1] : NaN);
+      if (!(typeof hasAuthoritativeTransportClock === 'function' && hasAuthoritativeTransportClock())) {
+        var tempoParts = event.data.trim().split(/\s+/);
+        setTempo(tempoParts.length > 1 ? tempoParts[1] : NaN);
+      }
     } else if (event.data.startsWith('dynam')) {
       document.getElementById('dynamics').innerHTML =
         event.data;
