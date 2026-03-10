@@ -232,8 +232,8 @@ function buildRoomStateMessage(room, serverNowMs) {
   var candidateFrom = room.hasCandidate ? room.candidateFromQuarter : -1;
   var candidateNum = room.hasCandidate ? room.candidateNumQuarters : -1;
   var candidateTranspose = room.hasCandidate ? room.candidateTranspose : -1;
-  var pendingTempo = Number.isFinite(Number(room.pendingTempoBpm))
-    ? clampTransportBpm(room.pendingTempoBpm).toFixed(3)
+  var pendingTempo = Number.isFinite(Number(room.transport && room.transport.pendingTempoBpm))
+    ? clampTransportBpm(room.transport.pendingTempoBpm).toFixed(3)
     : '-1';
   var dynamicsVersion = Math.max(0, Math.floor(Number(room.currentDynamicsVersion) || 0));
   var dynamicsPayload = room.currentDynamicsPayload ? String(room.currentDynamicsPayload).trim() : '';
@@ -378,14 +378,14 @@ function applyQueuedBoundaryUpdates(room, nowMs) {
   }
   var changed = false;
 
-  if (Number.isFinite(Number(room.pendingTempoBpm))) {
-    var nextBpm = clampTransportBpm(room.pendingTempoBpm);
+  if (Number.isFinite(Number(room.transport && room.transport.pendingTempoBpm))) {
+    var nextBpm = clampTransportBpm(room.transport.pendingTempoBpm);
     if (Math.abs(nextBpm - Number(room.transport.bpm)) > 1e-6) {
       room.transport.bpm = nextBpm;
       changed = true;
       console.log('ROOM ' + room.ID + ' tempo applied at phrase boundary: ' + nextBpm.toFixed(3));
     }
-    room.pendingTempoBpm = Number.NaN;
+    room.transport.pendingTempoBpm = Number.NaN;
   }
 
   if (promoteCandidateIfAvailable(room, nowMs)) {
@@ -694,6 +694,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (message.startsWith('tempo')) {
+      console.log('ROOM ' + roomFromSnake.ID + ' received tempo message: ' + message);
       var tempoParts = message.trim().split(/\s+/);
       if (tempoParts.length > 1) {
         var bpm = tempoControlToBpm(tempoParts[1]);
