@@ -20,7 +20,8 @@
     "start": "node server7.js",
     "capture:index3": "node scripts/capture-index3.mjs",
     "capture:conductor": "node scripts/capture-conductor.mjs",
-    "test:index3:splits": "node scripts/capture-index3.mjs --case-file tmp/index3-regression-cases.json --assert-mode strict-quarter --assert-tolerance-px 1.5 --settle-ms 900"
+    "test:index3:splits": "node scripts/capture-index3.mjs --case-file tmp/index3-regression-cases.json --assert-mode strict-quarter --assert-tolerance-px 1.5 --settle-ms 900",
+    "test:index7:realtime": "node scripts/test-index7-realtime-regressions.mjs"
   },
   "keywords": [],
   "author": "kage",

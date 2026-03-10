@@ -140,6 +140,16 @@ function setSnakeCoordinates(message) {
 
 var currentTacetCount = 0;
 var currentTacetSet = [];
+var pendingTacetCount = 0;
+var pendingTacetSet = null;
+
+function parseTacetSetPayload(payload) {
+  var trimmed = String(payload || '').trim();
+  if (!trimmed) {
+    return [];
+  }
+  return trimmed.split(/\s+/).map(Number).filter(Number.isFinite).map(Math.round);
+}
 
 function recomputeTacetSet(tacetCount) {
   currentTacetCount = Math.max(0, Math.min(3, tacetCount));
@@ -157,44 +167,116 @@ function recomputeTacetSet(tacetCount) {
 }
 
 function setTacetSet(payload) {
-  var trimmed = String(payload || '').trim();
-  currentTacetSet = trimmed.length > 0
-    ? trimmed.split(/\s+/).map(Number).filter(Number.isFinite).map(Math.round)
-    : [];
-  currentTacetCount = currentTacetSet.length;
-}
+  pendingTacetSet = parseTacetSetPayload(payload);
+  pendingTacetCount = pendingTacetSet.length;
 
-function updateTacetBanner(show) {
-  var banner = document.getElementById('tacetBanner');
-  if (!banner) return;
-  if (show) {
-    banner.classList.remove('tacet-banner-hidden');
-  } else {
-    banner.classList.add('tacet-banner-hidden');
+  // Keep candidate overlay visually accurate without changing current TACET banner/state.
+  if (phrasePreviewSvg) {
+    applyTacetSingleStaffOverlay(phrasePreviewSvg, selectedStaff(), {
+      updateBanner: false,
+      tacetSet: pendingTacetSet,
+      tacetLabel: 'NEXT: TACET',
+      tacetPreview: true,
+    });
   }
 }
 
-function applyTacetSingleStaffOverlay(svg, staffIndex) {
+function commitPendingTacetSet(options) {
+  options = options || {};
+  if (!Array.isArray(pendingTacetSet)) {
+    return false;
+  }
+  currentTacetSet = pendingTacetSet.slice();
+  currentTacetCount = currentTacetSet.length;
+  pendingTacetSet = null;
+  pendingTacetCount = 0;
+
+  if (!options.skipApplyCurrent) {
+    var activeSvg = typeof getActiveScoreSvg === 'function' ? getActiveScoreSvg() : null;
+    if (activeSvg) {
+      applyTacetSingleStaffOverlay(activeSvg, selectedStaff(), {
+        updateBanner: true,
+        tacetSet: currentTacetSet,
+        tacetLabel: 'TACET',
+        tacetPreview: false,
+      });
+    } else {
+      updateTacetBanner(currentTacetSet.indexOf(Number(selectedStaff())) !== -1);
+    }
+  }
+  return true;
+}
+
+function resolvePreviewTacetSet() {
+  if (Array.isArray(pendingTacetSet)) {
+    return pendingTacetSet;
+  }
+  return [];
+}
+
+function updateTacetBanner(show) {
+  void show;
+  var banner = document.getElementById('tacetBanner');
+  if (!banner) return;
+  // Tacet indication is rendered inside the phrase SVG itself.
+  banner.classList.add('tacet-banner-hidden');
+}
+
+function applyTacetSingleStaffOverlay(svg, staffIndex, options) {
+  options = options || {};
+  var updateBanner = options.updateBanner !== false;
+  var tacetSet = Array.isArray(options.tacetSet) ? options.tacetSet : currentTacetSet;
+  var tacetLabel = (typeof options.tacetLabel === 'string' && options.tacetLabel.trim())
+    ? options.tacetLabel.trim()
+    : 'TACET';
+  var isPreview = !!options.tacetPreview;
   if (!svg) return;
-  var oldOverlays = svg.querySelectorAll('.tacet-overlay');
+  var oldOverlays = svg.querySelectorAll('.tacet-overlay, .tacet-marker');
   for (var n = 0; n < oldOverlays.length; n++) oldOverlays[n].parentNode.removeChild(oldOverlays[n]);
-  var isTacet = currentTacetSet.indexOf(Number(staffIndex)) !== -1;
-  updateTacetBanner(isTacet);
+  var isTacet = tacetSet.indexOf(Number(staffIndex)) !== -1;
+  if (updateBanner) {
+    updateTacetBanner(isTacet);
+  }
   if (!isTacet) return;
   var vbRaw = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
   var vbX = Number.isFinite(vbRaw[0]) ? vbRaw[0] : 0;
   var vbY = Number.isFinite(vbRaw[1]) ? vbRaw[1] : 0;
   var vbW = Number.isFinite(vbRaw[2]) ? vbRaw[2] : 900;
   var vbH = Number.isFinite(vbRaw[3]) ? vbRaw[3] : 200;
-  var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-  rect.setAttribute('class', 'tacet-overlay');
-  rect.setAttribute('x', String(vbX));
-  rect.setAttribute('y', String(vbY));
-  rect.setAttribute('width', String(vbW));
-  rect.setAttribute('height', String(vbH));
-  rect.setAttribute('fill', 'rgba(255,255,255,0.55)');
-  rect.setAttribute('stroke', 'none');
-  svg.appendChild(rect);
+  var layout = osmdDetectLayout(svg);
+  var staffLeftX = Number.isFinite(Number(layout.staffLeftX)) ? Number(layout.staffLeftX) : vbX + 14;
+  var staffTopY = Number.isFinite(Number(layout.topY)) ? Number(layout.topY) : vbY + 40;
+  var staffBottomY = Number.isFinite(Number(layout.bottomY)) ? Number(layout.bottomY) : (staffTopY + 40);
+  var staffSpace = (staffBottomY - staffTopY) / 4;
+  if (!Number.isFinite(staffSpace) || staffSpace <= 0) {
+    staffSpace = Math.max(8, Math.min(18, vbH / 16));
+  }
+  var fontSize = Math.max(14, Math.min(30, staffSpace * 2.1));
+  var x = Math.max(vbX + 6, staffLeftX + Math.max(2, staffSpace * 0.15));
+  var y = staffTopY - Math.max(6, staffSpace * 1.2);
+  var minY = vbY + fontSize;
+  if (!Number.isFinite(y) || y < minY) {
+    y = minY;
+  }
+  var maxY = vbY + vbH - 4;
+  if (y > maxY) {
+    y = maxY;
+  }
+  var marker = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  marker.setAttribute('class', 'tacet-marker');
+  marker.setAttribute('x', x.toFixed(3));
+  marker.setAttribute('y', y.toFixed(3));
+  marker.setAttribute('font-size', fontSize.toFixed(3));
+  marker.setAttribute('font-family', 'Arial, sans-serif');
+  marker.setAttribute('font-weight', isPreview ? '600' : '700');
+  marker.setAttribute('letter-spacing', '0.8');
+  marker.setAttribute('fill', isPreview ? '#6a6a6a' : '#4f4f4f');
+  marker.setAttribute('stroke', '#ffffff');
+  marker.setAttribute('stroke-width', Math.max(0.9, fontSize * 0.09).toFixed(3));
+  marker.setAttribute('paint-order', 'stroke fill');
+  marker.setAttribute('pointer-events', 'none');
+  marker.textContent = tacetLabel;
+  svg.appendChild(marker);
 }
 
 // Keep eaten for diagnostics/transposition hints; phrase timing comes from ROOM_STATE.
@@ -490,10 +572,10 @@ function clearScore(options) {
     container.style.position = 'relative';
     container.style.overflow = 'hidden';
     container.style.textAlign = 'left';
-    container.style.width = '100%';
+    container.style.width = full_Width + 'px';
     container.style.maxWidth = full_Width + 'px';
-    container.style.margin = '0 auto';
-    container.style.boxSizing = 'border-box';
+    container.style.marginLeft = '0';
+    container.style.marginRight = 'auto';
     container.style.height = full_Height + 'px';
   }
   osmdLayout.svg = null;
@@ -544,20 +626,26 @@ function applyFixedScoreSvgStyle(svg) {
     return;
   }
   // Keep engraving size fixed by explicit pixel scaling from viewBox.
-  // Let CSS scale down responsively on smaller viewports.
+  // Do not stretch to canvas dimensions.
   var vbRaw = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
   var vbWidth = vbRaw.length >= 3 && Number.isFinite(vbRaw[2]) ? vbRaw[2] : null;
   var vbHeight = vbRaw.length >= 4 && Number.isFinite(vbRaw[3]) ? vbRaw[3] : null;
   var fixedScale = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
+  if (typeof resolveOsmdMusicZoom === 'function') {
+    var resolvedScale = Number(resolveOsmdMusicZoom());
+    if (Number.isFinite(resolvedScale) && resolvedScale > 0) {
+      fixedScale = resolvedScale;
+    }
+  }
   if (Number.isFinite(vbWidth) && vbWidth > 0 && Number.isFinite(vbHeight) && vbHeight > 0) {
     svg.style.width = (vbWidth * fixedScale).toFixed(3) + 'px';
-    svg.style.height = 'auto';
+    svg.style.height = (vbHeight * fixedScale).toFixed(3) + 'px';
   } else {
     svg.style.width = 'auto';
     svg.style.height = 'auto';
   }
-  svg.style.maxWidth = '100%';
-  svg.style.maxHeight = '100%';
+  svg.style.maxWidth = 'none';
+  svg.style.maxHeight = 'none';
   svg.style.display = 'block';
   svg.style.margin = '0';
   svg.style.pointerEvents = 'none';
@@ -1497,6 +1585,12 @@ function osmdSetBaseOffsetForLowEb(svgEl, layout) {
   // Clarinet low E-flat sits below multiple ledger lines; keep extra headroom.
   var lowEbY = bottomY + staffSpace * 8.5;
   var fixedScale = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
+  if (typeof resolveOsmdMusicZoom === 'function') {
+    var resolvedScale = Number(resolveOsmdMusicZoom());
+    if (Number.isFinite(resolvedScale) && resolvedScale > 0) {
+      fixedScale = resolvedScale;
+    }
+  }
   var lowEbPx = (lowEbY - vbRaw[1]) * fixedScale;
   var marginBottomPx = 2;
   var baseOffset = Math.max(0, full_Height - marginBottomPx - lowEbPx);
@@ -2784,7 +2878,14 @@ async function renderMusicSlice(events, fromQuarter, numQuarters, staffIndex, ba
     window.lastRenderDiagnostics = lastRenderDiagnostics;
   }
 
-  applyTacetSingleStaffOverlay(svg, staffIndex);
+  applyTacetSingleStaffOverlay(svg, staffIndex, {
+    updateBanner: !options.suppressTacetBanner,
+    tacetSet: Array.isArray(options.tacetSet) ? options.tacetSet : currentTacetSet,
+    tacetLabel: (typeof options.tacetLabel === 'string' && options.tacetLabel.trim())
+      ? options.tacetLabel.trim()
+      : 'TACET',
+    tacetPreview: !!options.tacetPreview,
+  });
 
   return true;
 }
@@ -2809,6 +2910,10 @@ async function renderPhraseSnapshot(snapshot, options) {
       skipPlayback: !!options.skipPlayback,
       skipRenderInfo: !!options.skipRenderInfo,
       skipDiagnostics: !!options.skipDiagnostics,
+      suppressTacetBanner: !!options.suppressTacetBanner,
+      tacetSet: Array.isArray(options.tacetSet) ? options.tacetSet : undefined,
+      tacetLabel: options.tacetLabel,
+      tacetPreview: !!options.tacetPreview,
       keyChanges: snapshot.keyChanges,
       clefChanges: snapshot.clefChanges || null,
     }
@@ -2854,6 +2959,10 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
       skipRenderInfo: true,
       skipDiagnostics: true,
       skipPreviewOnTop: true,
+      suppressTacetBanner: true,
+      tacetSet: resolvePreviewTacetSet(),
+      tacetLabel: 'NEXT: TACET',
+      tacetPreview: true,
     };
     Object.keys(renderOptions).forEach(function (key) {
       svgRenderOptions[key] = renderOptions[key];
@@ -2917,6 +3026,8 @@ async function commitPhraseSwapTargetSnapshot(snapshot) {
   if (!snapshot) {
     return;
   }
+  // Promote TACET only when the candidate becomes the current phrase.
+  commitPendingTacetSet({ skipApplyCurrent: true });
   stopPlaybarMotion();
   await renderPhraseSnapshot(snapshot);
   currentPhraseSnapshot = snapshot;
@@ -2976,6 +3087,10 @@ async function renderMusicFromSnakeCore() {
     return true;
   }
 
+  // When ROOM_STATE current phrase changes (including non-animated fallback), commit TACET now.
+  if (!alreadyCurrent) {
+    commitPendingTacetSet({ skipApplyCurrent: true });
+  }
   stopPlaybarMotion();
   await renderPhraseSnapshot(snapshot);
   currentPhraseSnapshot = snapshot;

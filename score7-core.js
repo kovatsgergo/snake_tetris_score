@@ -9,10 +9,28 @@ const fontStacks = {
 var selectedScoreFontName = 'Bravura';
 var spacingMode = 'engraved';
 VF.DEFAULT_FONT_STACK = fontStacks[selectedScoreFontName];
-const full_Width = 901;
-const full_Height = 260;
-const phrasePreviewOffsetY = 122;
+const scoreViewConfig = (typeof window !== 'undefined' && window.SCORE_VIEW_CONFIG)
+  ? window.SCORE_VIEW_CONFIG
+  : {};
+const SCORE_MAX_WIDTH_MOBILE = 901;
+const SCORE_MAX_WIDTH_LARGE = 1160;
+const SCORE_GEOMETRY_MOBILE = { fullHeight: 260, phrasePreviewOffsetY: 132 };
+const SCORE_GEOMETRY_TABLET = { fullHeight: 340, phrasePreviewOffsetY: 172 };
+const SCORE_GEOMETRY_DESKTOP = { fullHeight: 390, phrasePreviewOffsetY: 198 };
 const osmdMusicZoom = 0.73;
+const OSMD_WIDEST_CASE_VB_WIDTH = 1218.7262496; // measured for fromQuarter=29, transpose=+6, numQuarters=10
+const OSMD_TABLET_DESKTOP_MIN_WIDTH = 768;
+const OSMD_FIT_FILL_RATIO = 0.985;
+const OSMD_MAX_ZOOM = 1.08;
+var full_Width = Number.isFinite(Number(scoreViewConfig.fullWidth))
+  ? Number(scoreViewConfig.fullWidth)
+  : resolveResponsiveScoreMaxWidth();
+var full_Height = Number.isFinite(Number(scoreViewConfig.fullHeight))
+  ? Number(scoreViewConfig.fullHeight)
+  : resolveResponsiveScoreGeometry().fullHeight;
+var phrasePreviewOffsetY = Number.isFinite(Number(scoreViewConfig.phrasePreviewOffsetY))
+  ? Number(scoreViewConfig.phrasePreviewOffsetY)
+  : resolveResponsiveScoreGeometry().phrasePreviewOffsetY;
 const osmdUseAdaptiveViewBoxStretch = false;
 const phrasePreviewColor = '#989898';
 const dynamics_Height = 32;
@@ -135,6 +153,78 @@ var STEM_RULES_STORAGE_KEY = 'osmdStemRulesEnabled';
 var stemRulesEnabled = true;
 var stemRulesExtraStemLengthInSpaces = 0.0;
 
+function readViewportHeightForScoreProfile() {
+  if (typeof window === 'undefined') {
+    return Number.NaN;
+  }
+  if (window.visualViewport && Number.isFinite(Number(window.visualViewport.height))) {
+    return Number(window.visualViewport.height);
+  }
+  if (Number.isFinite(Number(window.innerHeight))) {
+    return Number(window.innerHeight);
+  }
+  return Number.NaN;
+}
+
+function readViewportWidthForScoreProfile() {
+  if (typeof window === 'undefined') {
+    return Number.NaN;
+  }
+  var candidates = [];
+  if (window.visualViewport && Number.isFinite(Number(window.visualViewport.width))) {
+    candidates.push(Number(window.visualViewport.width));
+  }
+  if (Number.isFinite(Number(window.innerWidth))) {
+    candidates.push(Number(window.innerWidth));
+  }
+  if (
+    window.document &&
+    window.document.documentElement &&
+    Number.isFinite(Number(window.document.documentElement.clientWidth))
+  ) {
+    candidates.push(Number(window.document.documentElement.clientWidth));
+  }
+  if (window.screen && Number.isFinite(Number(window.screen.width))) {
+    candidates.push(Number(window.screen.width));
+  }
+  candidates = candidates.filter(function (value) {
+    return Number.isFinite(value) && value > 0;
+  });
+  if (!candidates.length) {
+    return Number.NaN;
+  }
+  return Math.min.apply(null, candidates);
+}
+
+function resolveResponsiveScoreGeometry() {
+  var viewportWidth = readViewportWidthForScoreProfile();
+
+  if (Number.isFinite(viewportWidth) && viewportWidth >= 1200) {
+    return {
+      fullHeight: SCORE_GEOMETRY_DESKTOP.fullHeight,
+      phrasePreviewOffsetY: SCORE_GEOMETRY_DESKTOP.phrasePreviewOffsetY,
+    };
+  }
+  if (Number.isFinite(viewportWidth) && viewportWidth >= 768) {
+    return {
+      fullHeight: SCORE_GEOMETRY_TABLET.fullHeight,
+      phrasePreviewOffsetY: SCORE_GEOMETRY_TABLET.phrasePreviewOffsetY,
+    };
+  }
+  return {
+    fullHeight: SCORE_GEOMETRY_MOBILE.fullHeight,
+    phrasePreviewOffsetY: SCORE_GEOMETRY_MOBILE.phrasePreviewOffsetY,
+  };
+}
+
+function resolveResponsiveScoreMaxWidth() {
+  var viewportWidth = readViewportWidthForScoreProfile();
+  if (Number.isFinite(viewportWidth) && viewportWidth >= 768) {
+    return SCORE_MAX_WIDTH_LARGE;
+  }
+  return SCORE_MAX_WIDTH_MOBILE;
+}
+
 function parseStemRulesEnabled(value) {
   if (typeof value === 'string') {
     var normalized = value.trim().toLowerCase();
@@ -249,15 +339,66 @@ function ensureScoreLayeringContainer() {
   if (!container) {
     return;
   }
+  if (!Number.isFinite(Number(scoreViewConfig.fullWidth))) {
+    full_Width = resolveResponsiveScoreMaxWidth();
+  }
+  if (!Number.isFinite(Number(scoreViewConfig.fullHeight)) || !Number.isFinite(Number(scoreViewConfig.phrasePreviewOffsetY))) {
+    var geometry = resolveResponsiveScoreGeometry();
+    if (!Number.isFinite(Number(scoreViewConfig.fullHeight))) {
+      full_Height = geometry.fullHeight;
+    }
+    if (!Number.isFinite(Number(scoreViewConfig.phrasePreviewOffsetY))) {
+      phrasePreviewOffsetY = geometry.phrasePreviewOffsetY;
+    }
+  }
   container.style.position = 'relative';
   container.style.overflow = 'hidden';
   container.style.textAlign = 'left';
   container.style.width = '100%';
   container.style.maxWidth = full_Width + 'px';
-  container.style.margin = '0 auto';
-  container.style.boxSizing = 'border-box';
+  container.style.setProperty('max-width', full_Width + 'px', 'important');
+  container.style.marginLeft = '0';
+  container.style.marginRight = 'auto';
+  container.style.setProperty('margin-left', '0', 'important');
+  container.style.setProperty('margin-right', 'auto', 'important');
   container.style.height = full_Height + 'px';
 }
+
+function readScoreContainerClientWidthForOsmdZoom() {
+  var container = mainScoreElement || document.getElementById('score');
+  if (!container || typeof container.getBoundingClientRect !== 'function') {
+    return Number.NaN;
+  }
+  var rect = container.getBoundingClientRect();
+  var width = Number(rect && rect.width);
+  if (!Number.isFinite(width) || width <= 0) {
+    return Number.NaN;
+  }
+  return width;
+}
+
+function resolveOsmdMusicZoom() {
+  var baseZoom = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
+  var viewportWidth = readViewportWidthForScoreProfile();
+  if (!Number.isFinite(viewportWidth) || viewportWidth < OSMD_TABLET_DESKTOP_MIN_WIDTH) {
+    return baseZoom;
+  }
+  var availableWidth = readScoreContainerClientWidthForOsmdZoom();
+  if (!Number.isFinite(availableWidth) || availableWidth <= 0) {
+    return baseZoom;
+  }
+  var referenceWidth = Number(OSMD_WIDEST_CASE_VB_WIDTH);
+  if (!Number.isFinite(referenceWidth) || referenceWidth <= 0) {
+    return baseZoom;
+  }
+  var fitZoom = (availableWidth * OSMD_FIT_FILL_RATIO) / referenceWidth;
+  if (!Number.isFinite(fitZoom) || fitZoom <= 0) {
+    return baseZoom;
+  }
+  return Math.max(baseZoom, Math.min(OSMD_MAX_ZOOM, fitZoom));
+}
+
+window.resolveOsmdMusicZoom = resolveOsmdMusicZoom;
 
 // Variant 2 uses a fixed default instrument (no startup selector).
 setRange('piano');
@@ -929,6 +1070,16 @@ function recolorSvgMonochrome(svgEl, color) {
     return;
   }
   var targetColor = color || '#888888';
+  function hasClassName(node, className) {
+    if (!node || !className) {
+      return false;
+    }
+    if (node.classList && typeof node.classList.contains === 'function') {
+      return node.classList.contains(className);
+    }
+    var classAttr = (typeof node.getAttribute === 'function') ? String(node.getAttribute('class') || '') : '';
+    return classAttr.split(/\s+/).indexOf(className) !== -1;
+  }
   function isVisiblePaint(paint) {
     var value = String(paint || '').trim().toLowerCase();
     if (!value) {
@@ -944,6 +1095,9 @@ function recolorSvgMonochrome(svgEl, color) {
   }
   var allNodes = [svgEl].concat(Array.prototype.slice.call(svgEl.querySelectorAll('*')));
   allNodes.forEach(function (node) {
+    if (hasClassName(node, 'tacet-marker')) {
+      return;
+    }
     if (node.hasAttribute && node.hasAttribute('fill')) {
       var fill = node.getAttribute('fill');
       if (isVisiblePaint(fill)) {

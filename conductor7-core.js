@@ -260,10 +260,7 @@ function ensureScoreLayeringContainer() {
   container.style.position = 'relative';
   container.style.overflow = 'hidden';
   container.style.textAlign = 'left';
-  container.style.width = '100%';
-  container.style.maxWidth = full_Width + 'px';
-  container.style.margin = '0 auto';
-  container.style.boxSizing = 'border-box';
+  container.style.width = full_Width + 'px';
   container.style.height = full_Height + 'px';
 }
 

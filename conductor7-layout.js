@@ -481,10 +481,7 @@ function clearScore(options) {
     container.style.position = 'relative';
     container.style.overflow = 'hidden';
     container.style.textAlign = 'left';
-    container.style.width = '100%';
-    container.style.maxWidth = full_Width + 'px';
-    container.style.margin = '0 auto';
-    container.style.boxSizing = 'border-box';
+    container.style.width = full_Width + 'px';
     container.style.height = full_Height + 'px';
   }
   osmdLayout.svg = null;
@@ -535,20 +532,20 @@ function applyFixedScoreSvgStyle(svg) {
     return;
   }
   // Keep engraving size fixed by explicit pixel scaling from viewBox.
-  // Let CSS scale down responsively on smaller viewports.
+  // Do not stretch to canvas dimensions.
   var vbRaw = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
   var vbWidth = vbRaw.length >= 3 && Number.isFinite(vbRaw[2]) ? vbRaw[2] : null;
   var vbHeight = vbRaw.length >= 4 && Number.isFinite(vbRaw[3]) ? vbRaw[3] : null;
   var fixedScale = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
   if (Number.isFinite(vbWidth) && vbWidth > 0 && Number.isFinite(vbHeight) && vbHeight > 0) {
     svg.style.width = (vbWidth * fixedScale).toFixed(3) + 'px';
-    svg.style.height = 'auto';
+    svg.style.height = (vbHeight * fixedScale).toFixed(3) + 'px';
   } else {
     svg.style.width = 'auto';
     svg.style.height = 'auto';
   }
-  svg.style.maxWidth = '100%';
-  svg.style.maxHeight = '100%';
+  svg.style.maxWidth = 'none';
+  svg.style.maxHeight = 'none';
   svg.style.display = 'block';
   svg.style.margin = '0';
   svg.style.pointerEvents = 'none';

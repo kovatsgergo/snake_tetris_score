@@ -149,6 +149,12 @@ h2 {
     margin: 8px auto;
 }
 
+.panel7.panel7-play #score {
+    max-width: 901px !important;
+    margin-left: 0 !important;
+    margin-right: auto !important;
+}
+
 .panel7 #control3 {
     width: 100%;
     box-sizing: border-box;
@@ -179,4 +185,19 @@ h2 {
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
+}
+
+/* Tablet landscape profile: keep the layout left-anchored and allow a larger score block. */
+@media (min-width: 1024px) and (max-width: 1366px) and (orientation: landscape) {
+    .panel7 {
+        width: min(calc(100vw - 16px), 1360px);
+        margin-left: 8px;
+        margin-right: auto;
+    }
+
+    .panel7.panel7-play #score {
+        max-width: 1160px !important;
+        margin-left: 0 !important;
+        margin-right: auto !important;
+    }
 }

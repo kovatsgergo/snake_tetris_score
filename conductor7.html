@@ -39,7 +39,7 @@
     </fieldset>
   </div>
   <div id="control2" style="position: relative; display: none;" >
-    <fieldset class="panel7 panel7-play">
+    <fieldset>
       <legend id="playLegend">
         PLAY!
         <button id="back" onclick="goBack()">
@@ -64,15 +64,15 @@
         </div>
       </div>
       <div id="score"></div>
-      <div class="score-footer-row">
+      <div>
         <canvas id="dynCanvas" width="900" height="32"></canvas>
       </div>
     </fieldset>
   </div>
-  <fieldset class="panel7 panel7-debug">
+  <fieldset>
     <legend>Debug <button onclick="toggleDebug()">toggle</button></legend>
     <div id="control3" style="display: none;">
-      <div class="debug-controls-row" style="margin: 8px 0;">
+      <div style="margin: 8px 0;">
         <label for="debugFromQuarter">fromQuarter:</label>
         <label style="margin-left: 4px; display: inline-flex; align-items: center; gap: 4px;">
           <input id="autoFromQuarterEnabled" type="checkbox" checked onchange="onAutoFromQuarterChange()" />

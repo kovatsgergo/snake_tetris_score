@@ -9,12 +9,14 @@ const appConfig = require('./config.js');
 
 const app = express();
 
-app.get(['/', '/index', '/index.html', '/score'], (_req, res) => {
+app.get('/score', function (_req, res) {
   res.sendFile(path.join(__dirname, 'index7.html'));
 });
-app.get(['/conductor', '/conductor.html'], (_req, res) => {
+
+app.get('/conductor', function (_req, res) {
   res.sendFile(path.join(__dirname, 'conductor7.html'));
 });
+
 app.use('/', express.static(__dirname + '/'));
 
 const server = app.listen(PORT, () => console.log(`Listening on ${PORT}`));
