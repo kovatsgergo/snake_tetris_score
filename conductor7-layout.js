@@ -445,10 +445,183 @@ async function loadTannhauserMxl() {
       wsSend('STAFFCOUNT ' + tannhauserScore.getStaffCount());
     }
 
+    ensureConductorFitReferenceMeasured();
     renderMusicFromSnake();
   } catch (error) {
     setDebugStatus('MXL load/parse error: ' + error.message);
   }
+}
+
+var conductorFitReferenceMeasurePromise = null;
+
+function buildConductorSnapshotForFitCase(fromQuarter, numQuarters, transposeOverride) {
+  var previousTranspose = transposeSemitones;
+  transposeSemitones = Number.isFinite(Number(transposeOverride))
+    ? Math.floor(Number(transposeOverride))
+    : previousTranspose;
+  var snapshot = null;
+  try {
+    snapshot = buildConductorPhraseSnapshot(fromQuarter, numQuarters);
+  } finally {
+    transposeSemitones = previousTranspose;
+  }
+  return snapshot;
+}
+
+function readConductorFitWidthCaseConfig() {
+  if (typeof window !== 'undefined' && typeof window.getConductorFitWidthCaseConfig === 'function') {
+    return window.getConductorFitWidthCaseConfig();
+  }
+  return {
+    fromQuarter: 29,
+    numQuarters: 10,
+    transpose: 6,
+  };
+}
+
+function readConductorFitHeightCaseConfig() {
+  if (typeof window !== 'undefined' && typeof window.getConductorFitHeightCaseConfig === 'function') {
+    return window.getConductorFitHeightCaseConfig();
+  }
+  return {
+    fromQuarter: 72,
+    numQuarters: 5,
+    transpose: 9,
+  };
+}
+
+async function measureConductorSnapshotUnits(snapshot, fromQuarter, numQuarters) {
+  if (!snapshot || !Array.isArray(snapshot.staffSlices) || !snapshot.staffSlices.length) {
+    return null;
+  }
+  var xmlBuild = osmdBuildConductorSliceMusicXml(
+    snapshot.staffSlices,
+    fromQuarter,
+    numQuarters,
+    snapshot.barlinesQ || []
+  );
+  var xml = xmlBuild && xmlBuild.xml ? xmlBuild.xml : '';
+  if (!xml) {
+    return null;
+  }
+
+  var probe = document.createElement('div');
+  probe.style.position = 'absolute';
+  probe.style.left = '-100000px';
+  probe.style.top = '-100000px';
+  probe.style.width = '5000px';
+  probe.style.height = '5000px';
+  probe.style.visibility = 'hidden';
+  probe.style.pointerEvents = 'none';
+  document.body.appendChild(probe);
+
+  try {
+    var probeOsmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(probe);
+    probeOsmd.Zoom = 1;
+    probeOsmd.setOptions({
+      backend: 'svg',
+      autoResize: false,
+      drawTitle: false,
+      drawSubtitle: false,
+      drawComposer: false,
+      drawPartNames: true,
+      drawPartAbbreviations: true,
+      drawMeasureNumbers: false,
+      renderSingleHorizontalStaffline: true,
+      stretchLastSystemLine: false,
+    });
+    osmdDisableMultiRestGeneration(probeOsmd);
+    osmdApplyConductorSpacingRules(probeOsmd);
+
+    await probeOsmd.load(xml);
+    probeOsmd.render();
+
+    var svg = probe.querySelector('svg');
+    if (!svg) {
+      return null;
+    }
+    var conductorDetected = osmdDetectConductorLayout(svg);
+    var layout = conductorDetected.layout || osmdDetectLayout(svg);
+    osmdAlignConductorPartNames(svg, snapshot, layout);
+
+    var bbox = null;
+    try {
+      bbox = svg.getBBox();
+    } catch (_bboxError) {
+      bbox = null;
+    }
+    if (!bbox) {
+      return null;
+    }
+    var widthUnits = Number(bbox.width);
+    var heightUnits = Number(bbox.height);
+    var vbParts = String(svg.getAttribute('viewBox') || '').trim().split(/\s+/).map(Number);
+    var viewBoxHeightUnits = (
+      vbParts.length >= 4 && Number.isFinite(vbParts[3]) && vbParts[3] > 0
+    ) ? Number(vbParts[3]) : Number.NaN;
+    if (!Number.isFinite(widthUnits) || widthUnits <= 0 || !Number.isFinite(heightUnits) || heightUnits <= 0) {
+      return null;
+    }
+    return {
+      widthUnits: widthUnits,
+      heightUnits: heightUnits,
+      viewBoxHeightUnits: viewBoxHeightUnits,
+    };
+  } finally {
+    if (probe.parentNode) {
+      probe.parentNode.removeChild(probe);
+    }
+  }
+}
+
+async function ensureConductorFitReferenceMeasured() {
+  if (conductorFitReferenceMeasurePromise) {
+    return conductorFitReferenceMeasurePromise;
+  }
+  conductorFitReferenceMeasurePromise = (async function () {
+    if (!tannhauserScore || typeof window.setConductorFitReferenceUnits !== 'function') {
+      return false;
+    }
+    var widthCase = readConductorFitWidthCaseConfig();
+    var heightCase = readConductorFitHeightCaseConfig();
+    var widthFrom = Math.max(0, Math.floor(Number(widthCase.fromQuarter) || 29));
+    var widthNum = Math.max(1, Math.floor(Number(widthCase.numQuarters) || 10));
+    var widthTranspose = Math.floor(Number(widthCase.transpose) || 6);
+    var heightFrom = Math.max(0, Math.floor(Number(heightCase.fromQuarter) || 72));
+    var heightNum = Math.max(1, Math.floor(Number(heightCase.numQuarters) || 5));
+    var heightTranspose = Math.floor(Number(heightCase.transpose) || 9);
+
+    var widthSnapshot = buildConductorSnapshotForFitCase(widthFrom, widthNum, widthTranspose);
+    var heightSnapshot = buildConductorSnapshotForFitCase(heightFrom, heightNum, heightTranspose);
+    if (!widthSnapshot || !heightSnapshot) {
+      return false;
+    }
+
+    var widthUnitsMeasured = await measureConductorSnapshotUnits(widthSnapshot, widthFrom, widthNum);
+    var heightUnitsMeasured = await measureConductorSnapshotUnits(heightSnapshot, heightFrom, heightNum);
+    if (!widthUnitsMeasured || !heightUnitsMeasured) {
+      return false;
+    }
+    var measuredWidthUnits = Number(widthUnitsMeasured.widthUnits);
+    var measuredHeightUnits = Number(heightUnitsMeasured.heightUnits);
+    var measuredViewBoxHeight = Number(heightUnitsMeasured.viewBoxHeightUnits);
+    if (!Number.isFinite(measuredWidthUnits) || measuredWidthUnits <= 0) {
+      return false;
+    }
+    if (!Number.isFinite(measuredHeightUnits) || measuredHeightUnits <= 0) {
+      return false;
+    }
+    if (Number.isFinite(measuredViewBoxHeight) && measuredViewBoxHeight > 0) {
+      measuredHeightUnits = Math.max(measuredHeightUnits, measuredViewBoxHeight);
+    }
+    return !!window.setConductorFitReferenceUnits(
+      measuredWidthUnits,
+      measuredHeightUnits
+    );
+  })().finally(function () {
+    conductorFitReferenceMeasurePromise = null;
+  });
+  return conductorFitReferenceMeasurePromise;
 }
 
 // ------------------------------
@@ -551,6 +724,30 @@ function applyFixedScoreSvgStyle(svg) {
   svg.style.pointerEvents = 'none';
   svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
 }
+
+function syncConductorLayoutAfterResize() {
+  var svg = getActiveScoreSvg();
+  if (!svg) {
+    return;
+  }
+  applyFixedScoreSvgStyle(svg);
+  var dynCanvas = document.getElementById('dynCanvas');
+  if (dynCanvas) {
+    dynCanvas.width = Math.max(1, Math.round(Number(full_Width) || 1));
+    dynCanvas.style.width = String(Math.max(1, Math.round(Number(full_Width) || 1))) + 'px';
+  }
+  if (Array.isArray(osmdLayout.dynamicsBeatSplitPoints) && osmdLayout.dynamicsBeatSplitPoints.length) {
+    osmdLayout.dynamicsBeatSplitPointsCanvas = mapScoreSplitPointsToCanvas(
+      osmdLayout.dynamicsBeatSplitPoints,
+      svg,
+      dynCanvas
+    );
+  }
+  if (typeof redrawDynamicsOnly === 'function') {
+    redrawDynamicsOnly();
+  }
+}
+window.syncConductorLayoutAfterResize = syncConductorLayoutAfterResize;
 
 function osmdDisableMultiRestGeneration(osmd) {
   if (!osmd || !osmd.EngravingRules) {
@@ -1746,15 +1943,88 @@ function osmdSetBaseOffsetForConductorFirstStaff(svgEl, layout) {
   var targetTopPx = osmdResolveConductorFirstStaffTopPx();
   var marginBottomPx = 8;
   var maxOffset = full_Height - marginBottomPx - bottomPx;
+  if (!Number.isFinite(maxOffset)) {
+    maxOffset = 0;
+  }
+  maxOffset = Math.max(0, maxOffset);
   var baseOffset = targetTopPx - topPx;
   if (!Number.isFinite(baseOffset)) {
     baseOffset = 0;
   }
   baseOffset = Math.max(0, baseOffset);
-  if (Number.isFinite(maxOffset)) {
-    baseOffset = Math.min(baseOffset, maxOffset);
-  }
+  baseOffset = Math.min(baseOffset, maxOffset);
   svgEl.__baseOffsetY = baseOffset;
+}
+
+function normalizeConductorPartNameLabel(label) {
+  var text = String(label === undefined || label === null ? '' : label).trim();
+  if (!text) {
+    return '';
+  }
+  if (/^Clarinet in B(?:b|♭)\s*\(B Flat\)$/i.test(text)) {
+    return 'Clarinet in Bb';
+  }
+  return text;
+}
+
+function osmdResolveConductorPartNamePadding() {
+  var cfg = (window && window.SCORE_VIEW_CONFIG) ? window.SCORE_VIEW_CONFIG : {};
+  var padding = Number(cfg.conductorPartNamePaddingPx);
+  if (!Number.isFinite(padding)) {
+    padding = 10;
+  }
+  return Math.max(0, padding);
+}
+
+function osmdAlignConductorPartNames(svgEl, snapshot, layout) {
+  if (!svgEl || !snapshot || !layout) {
+    return;
+  }
+  var staffLeftX = Number(layout.staffLeftX);
+  if (!Number.isFinite(staffLeftX)) {
+    return;
+  }
+  var slices = Array.isArray(snapshot.staffSlices) ? snapshot.staffSlices : [];
+  if (!slices.length) {
+    return;
+  }
+
+  var labelMap = new Map();
+  slices.forEach(function (slice) {
+    var raw = String(slice && slice.staffName ? slice.staffName : '').trim();
+    if (!raw) {
+      return;
+    }
+    labelMap.set(raw, normalizeConductorPartNameLabel(raw));
+    var normalized = normalizeConductorPartNameLabel(raw);
+    if (normalized && !labelMap.has(normalized)) {
+      labelMap.set(normalized, normalized);
+    }
+  });
+  if (!labelMap.size) {
+    return;
+  }
+
+  var rightEdgeX = staffLeftX - osmdResolveConductorPartNamePadding();
+  var texts = svgEl.querySelectorAll('text');
+  texts.forEach(function (textEl) {
+    var original = String(textEl.textContent || '').trim();
+    if (!original || !labelMap.has(original)) {
+      return;
+    }
+    var normalized = labelMap.get(original) || original;
+    if (normalized !== original) {
+      textEl.textContent = normalized;
+    }
+    textEl.setAttribute('text-anchor', 'end');
+    textEl.style.textAnchor = 'end';
+    textEl.setAttribute('x', Number(rightEdgeX).toFixed(3));
+    var tspans = textEl.querySelectorAll('tspan');
+    tspans.forEach(function (tspan) {
+      tspan.setAttribute('x', Number(rightEdgeX).toFixed(3));
+      tspan.setAttribute('text-anchor', 'end');
+    });
+  });
 }
 
 function osmdDedupSortedXs(xs, minDelta) {
@@ -4048,6 +4318,12 @@ async function renderConductorMusicSlice(snapshot, options) {
   applyFixedScoreSvgStyle(svg);
   conductorDetected = osmdDetectConductorLayout(svg);
   layout = conductorDetected.layout || layout;
+  osmdAlignConductorPartNames(svg, snapshot, layout);
+  // Part-name post-processing can change left bounds; normalize viewBox again.
+  osmdAlignViewBoxToStaffLeft(svg, layout);
+  applyFixedScoreSvgStyle(svg);
+  conductorDetected = osmdDetectConductorLayout(svg);
+  layout = conductorDetected.layout || layout;
   osmdSetBaseOffsetForConductorFirstStaff(svg, layout);
   applyScoreSvgTranslate(svg, 0);
 
@@ -4558,6 +4834,9 @@ async function renderMusicFromSnakeCore() {
   }
   if (phraseSwapInProgress) {
     return false;
+  }
+  if (typeof ensureScoreLayeringContainer === 'function') {
+    ensureScoreLayeringContainer();
   }
 
   var currentDescriptor = readRoomStateCurrentPhrase();

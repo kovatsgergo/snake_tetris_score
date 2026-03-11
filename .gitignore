@@ -149,3 +149,4 @@ scripts/
 .playwright-cli/
 v7-backup*
 other_versions/
+old_scores/

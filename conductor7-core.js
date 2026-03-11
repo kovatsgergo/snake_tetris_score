@@ -10,21 +10,65 @@ var selectedScoreFontName = 'Bravura';
 var spacingMode = 'engraved';
 VF.DEFAULT_FONT_STACK = fontStacks[selectedScoreFontName];
 const scoreViewConfig = (window && window.SCORE_VIEW_CONFIG) ? window.SCORE_VIEW_CONFIG : {};
-const full_Width = Number.isFinite(Number(scoreViewConfig.fullWidth))
-  ? Number(scoreViewConfig.fullWidth)
-  : 901;
-const full_Height = Number.isFinite(Number(scoreViewConfig.fullHeight))
-  ? Number(scoreViewConfig.fullHeight)
-  : 760;
+const DEFAULT_SCORE_WIDTH = 901;
+const DEFAULT_SCORE_HEIGHT = 340;
+var full_Width = DEFAULT_SCORE_WIDTH;
+var full_Height = DEFAULT_SCORE_HEIGHT;
 const phrasePreviewOffsetY = (
   window &&
   window.SCORE_VIEW_CONFIG &&
   Number.isFinite(Number(window.SCORE_VIEW_CONFIG.phrasePreviewOffsetY))
 ) ? Number(window.SCORE_VIEW_CONFIG.phrasePreviewOffsetY) : 122;
-const osmdMusicZoom = 0.58;
+const DEFAULT_OSMD_MUSIC_ZOOM = Number.isFinite(Number(scoreViewConfig.osmdMusicZoom))
+  ? Number(scoreViewConfig.osmdMusicZoom)
+  : 0.58;
+const OSMD_WIDEST_CASE_VB_WIDTH = 1218.7262496;
+const OSMD_WIDEST_CASE_VB_HEIGHT = 381.0;
+const CONDUCTOR_FIT_PADDING_X = Number.isFinite(Number(scoreViewConfig.conductorFitPaddingX))
+  ? Math.max(0, Number(scoreViewConfig.conductorFitPaddingX))
+  : Math.max(0, Number(scoreViewConfig.conductorFitPaddingPx) || 10);
+const CONDUCTOR_FIT_PADDING_Y = Number.isFinite(Number(scoreViewConfig.conductorFitPaddingY))
+  ? Math.max(0, Number(scoreViewConfig.conductorFitPaddingY))
+  : Math.max(0, Number(scoreViewConfig.conductorFitPaddingPx) || 10);
+const CONDUCTOR_FIT_MIN_ZOOM = Number.isFinite(Number(scoreViewConfig.conductorFitMinZoom))
+  ? Math.max(0.01, Number(scoreViewConfig.conductorFitMinZoom))
+  : 0.1;
+const CONDUCTOR_FIT_MAX_ZOOM = Number.isFinite(Number(scoreViewConfig.conductorFitMaxZoom))
+  ? Math.max(CONDUCTOR_FIT_MIN_ZOOM, Number(scoreViewConfig.conductorFitMaxZoom))
+  : 1.5;
+const CONDUCTOR_FIT_SAFETY = 0.995;
+const CONDUCTOR_FIT_WIDTH_FROM_QUARTER = Number.isFinite(Number(scoreViewConfig.conductorFitWidthFromQuarter))
+  ? Math.max(0, Math.floor(Number(scoreViewConfig.conductorFitWidthFromQuarter)))
+  : 29;
+const CONDUCTOR_FIT_WIDTH_NUM_QUARTERS = Number.isFinite(Number(scoreViewConfig.conductorFitWidthNumQuarters))
+  ? Math.max(1, Math.floor(Number(scoreViewConfig.conductorFitWidthNumQuarters)))
+  : 10;
+const CONDUCTOR_FIT_WIDTH_TRANSPOSE = Number.isFinite(Number(scoreViewConfig.conductorFitWidthTranspose))
+  ? Math.floor(Number(scoreViewConfig.conductorFitWidthTranspose))
+  : 6;
+const CONDUCTOR_FIT_HEIGHT_FROM_QUARTER = Number.isFinite(Number(scoreViewConfig.conductorFitHeightFromQuarter))
+  ? Math.max(0, Math.floor(Number(scoreViewConfig.conductorFitHeightFromQuarter)))
+  : 72;
+const CONDUCTOR_FIT_HEIGHT_NUM_QUARTERS = Number.isFinite(Number(scoreViewConfig.conductorFitHeightNumQuarters))
+  ? Math.max(1, Math.floor(Number(scoreViewConfig.conductorFitHeightNumQuarters)))
+  : 5;
+const CONDUCTOR_FIT_HEIGHT_TRANSPOSE = Number.isFinite(Number(scoreViewConfig.conductorFitHeightTranspose))
+  ? Math.floor(Number(scoreViewConfig.conductorFitHeightTranspose))
+  : 9;
+var osmdMusicZoom = DEFAULT_OSMD_MUSIC_ZOOM;
 const osmdUseAdaptiveViewBoxStretch = false;
 const phrasePreviewColor = '#989898';
 const dynamics_Height = 32;
+const conductorScoreLeftPaddingPx = Number.isFinite(Number(scoreViewConfig.conductorScoreLeftPaddingPx))
+  ? Number(scoreViewConfig.conductorScoreLeftPaddingPx)
+  : 0;
+const conductorDynamicsGapPx = Number.isFinite(Number(scoreViewConfig.conductorDynamicsGapPx))
+  ? Number(scoreViewConfig.conductorDynamicsGapPx)
+  : 0;
+var conductorFitReferenceWidthUnits = OSMD_WIDEST_CASE_VB_WIDTH;
+var conductorFitReferenceHeightUnits = OSMD_WIDEST_CASE_VB_HEIGHT;
+var conductorFitReferenceReady = false;
+var conductorFitCachedVerticalPx = 170;
 const game_Width = 16;
 const game_Height = 32;
 var scoreElement = document.getElementById('score');
@@ -252,16 +296,188 @@ function setDynamicsCanvasFont() {
   ctx.font = '32px ' + selectedScoreFontName + ', Petaluma';
 }
 
+function readViewportSizeForConductorFit() {
+  if (typeof window === 'undefined') {
+    return {
+      width: Number.NaN,
+      height: Number.NaN,
+    };
+  }
+  var widthCandidates = [];
+  var heightCandidates = [];
+  if (window.visualViewport && Number.isFinite(Number(window.visualViewport.width))) {
+    widthCandidates.push(Number(window.visualViewport.width));
+  }
+  if (window.visualViewport && Number.isFinite(Number(window.visualViewport.height))) {
+    heightCandidates.push(Number(window.visualViewport.height));
+  }
+  if (Number.isFinite(Number(window.innerWidth))) {
+    widthCandidates.push(Number(window.innerWidth));
+  }
+  if (Number.isFinite(Number(window.innerHeight))) {
+    heightCandidates.push(Number(window.innerHeight));
+  }
+  if (
+    window.document &&
+    window.document.documentElement &&
+    Number.isFinite(Number(window.document.documentElement.clientWidth))
+  ) {
+    widthCandidates.push(Number(window.document.documentElement.clientWidth));
+  }
+  if (
+    window.document &&
+    window.document.documentElement &&
+    Number.isFinite(Number(window.document.documentElement.clientHeight))
+  ) {
+    heightCandidates.push(Number(window.document.documentElement.clientHeight));
+  }
+  widthCandidates = widthCandidates.filter(function (value) {
+    return Number.isFinite(value) && value > 0;
+  });
+  heightCandidates = heightCandidates.filter(function (value) {
+    return Number.isFinite(value) && value > 0;
+  });
+  return {
+    width: widthCandidates.length ? Math.min.apply(null, widthCandidates) : Number.NaN,
+    height: heightCandidates.length ? Math.min.apply(null, heightCandidates) : Number.NaN,
+  };
+}
+
+function readConductorFitReferenceUnits() {
+  var widthUnits = Number(conductorFitReferenceWidthUnits);
+  var heightUnits = Number(conductorFitReferenceHeightUnits);
+  if (!Number.isFinite(widthUnits) || widthUnits <= 0) {
+    widthUnits = OSMD_WIDEST_CASE_VB_WIDTH;
+  }
+  if (!Number.isFinite(heightUnits) || heightUnits <= 0) {
+    heightUnits = OSMD_WIDEST_CASE_VB_HEIGHT;
+  }
+  return {
+    widthUnits: widthUnits,
+    heightUnits: heightUnits,
+  };
+}
+
+function measureConductorFixedVerticalPx() {
+  var panel = document.getElementById('control2');
+  var fieldset = panel ? panel.querySelector('fieldset') : null;
+  var scoreContainer = mainScoreElement || document.getElementById('score');
+  if (
+    !fieldset ||
+    !scoreContainer ||
+    typeof fieldset.getBoundingClientRect !== 'function' ||
+    typeof scoreContainer.getBoundingClientRect !== 'function'
+  ) {
+    return conductorFitCachedVerticalPx;
+  }
+  var fieldsetRect = fieldset.getBoundingClientRect();
+  var scoreRect = scoreContainer.getBoundingClientRect();
+  if (
+    !Number.isFinite(fieldsetRect.height) ||
+    fieldsetRect.height <= 0 ||
+    !Number.isFinite(scoreRect.height) ||
+    scoreRect.height <= 0
+  ) {
+    return conductorFitCachedVerticalPx;
+  }
+  var topGap = Number(scoreRect.top) - Number(fieldsetRect.top);
+  var bottomGap = Number(fieldsetRect.bottom) - Number(scoreRect.bottom);
+  var fixedPx = topGap + bottomGap;
+  if (Number.isFinite(fixedPx) && fixedPx > 0) {
+    conductorFitCachedVerticalPx = fixedPx;
+  }
+  return conductorFitCachedVerticalPx;
+}
+
+function resolveConductorFitGeometry() {
+  var viewport = readViewportSizeForConductorFit();
+  var viewportWidth = Number(viewport.width);
+  var viewportHeight = Number(viewport.height);
+  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) {
+    viewportWidth = window.innerWidth || 1024;
+  }
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+    viewportHeight = window.innerHeight || 768;
+  }
+
+  var positiveLeftPad = Math.max(0, Number(conductorScoreLeftPaddingPx) || 0);
+  var maxScoreWidthPx = Math.max(120, viewportWidth - CONDUCTOR_FIT_PADDING_X * 2 - positiveLeftPad);
+  var maxTotalHeightPx = Math.max(120, viewportHeight - CONDUCTOR_FIT_PADDING_Y * 2);
+  var fixedVerticalPx = Math.max(0, measureConductorFixedVerticalPx());
+  var maxScoreHeightPx = Math.max(80, maxTotalHeightPx - fixedVerticalPx);
+  var referenceUnits = readConductorFitReferenceUnits();
+
+  var zoomByWidth = (maxScoreWidthPx * CONDUCTOR_FIT_SAFETY) / referenceUnits.widthUnits;
+  var zoomByHeight = (maxScoreHeightPx * CONDUCTOR_FIT_SAFETY) / referenceUnits.heightUnits;
+  var fitZoom = Math.min(zoomByWidth, zoomByHeight);
+  if (!Number.isFinite(fitZoom) || fitZoom <= 0) {
+    fitZoom = DEFAULT_OSMD_MUSIC_ZOOM;
+  }
+  fitZoom = Math.max(CONDUCTOR_FIT_MIN_ZOOM, Math.min(CONDUCTOR_FIT_MAX_ZOOM, fitZoom));
+  var scoreWidthPx = Math.max(1, Math.floor(referenceUnits.widthUnits * fitZoom));
+  var scoreHeightPx = Math.max(1, Math.floor(referenceUnits.heightUnits * fitZoom));
+  var verticalSparePx = Math.max(0, maxScoreHeightPx - scoreHeightPx);
+
+  return {
+    zoom: fitZoom,
+    scoreWidthPx: scoreWidthPx,
+    scoreHeightPx: scoreHeightPx,
+    maxScoreWidthPx: maxScoreWidthPx,
+    maxScoreHeightPx: maxScoreHeightPx,
+    fixedVerticalPx: fixedVerticalPx,
+    verticalSparePx: verticalSparePx,
+  };
+}
+
+function applyDynamicsCanvasGap(availableSparePx) {
+  var canvas = document.getElementById('dynCanvas');
+  if (!canvas || !canvas.style) {
+    return;
+  }
+  canvas.style.display = 'block';
+  var shift = Number(conductorDynamicsGapPx) || 0;
+  if (shift >= 0) {
+    // Positive value is a reclaimable gap: use it only when there is spare vertical room.
+    var sparePx = Math.max(0, Number(availableSparePx) || 0);
+    var effectiveGap = Math.min(shift, sparePx);
+    canvas.style.marginTop = effectiveGap + 'px';
+    canvas.style.transform = 'none';
+    canvas.style.webkitTransform = 'none';
+  } else {
+    canvas.style.marginTop = '0px';
+    var translate = 'translateY(' + shift + 'px)';
+    canvas.style.transform = translate;
+    canvas.style.webkitTransform = translate;
+  }
+  // Keep debug controls clickable even if the canvas is shifted upward.
+  canvas.style.pointerEvents = 'none';
+}
+
 function ensureScoreLayeringContainer() {
   var container = mainScoreElement || document.getElementById('score');
   if (!container) {
     return;
   }
+  var geometry = resolveConductorFitGeometry();
+  full_Width = geometry.scoreWidthPx;
+  full_Height = geometry.scoreHeightPx;
+  osmdMusicZoom = geometry.zoom;
   container.style.position = 'relative';
   container.style.overflow = 'hidden';
   container.style.textAlign = 'left';
   container.style.width = full_Width + 'px';
   container.style.height = full_Height + 'px';
+  container.style.marginLeft = String(conductorScoreLeftPaddingPx) + 'px';
+  container.style.marginRight = 'auto';
+  applyDynamicsCanvasGap(geometry.verticalSparePx);
+  var dynCanvas = document.getElementById('dynCanvas');
+  if (dynCanvas) {
+    dynCanvas.width = Math.max(1, Math.round(full_Width));
+    dynCanvas.style.width = full_Width + 'px';
+  }
+  if (typeof window !== 'undefined' && typeof window.syncConductorLayoutAfterResize === 'function') {
+    window.syncConductorLayoutAfterResize();
+  }
 }
 
 // Variant 2 uses a fixed default instrument (no startup selector).
@@ -269,6 +485,71 @@ setRange('piano');
 
 setDynamicsCanvasFont();
 ensureScoreLayeringContainer();
+window.ensureScoreLayeringContainer = ensureScoreLayeringContainer;
+window.getConductorFitWidthCaseConfig = function () {
+  return {
+    fromQuarter: CONDUCTOR_FIT_WIDTH_FROM_QUARTER,
+    numQuarters: CONDUCTOR_FIT_WIDTH_NUM_QUARTERS,
+    transpose: CONDUCTOR_FIT_WIDTH_TRANSPOSE,
+  };
+};
+window.getConductorFitHeightCaseConfig = function () {
+  return {
+    fromQuarter: CONDUCTOR_FIT_HEIGHT_FROM_QUARTER,
+    numQuarters: CONDUCTOR_FIT_HEIGHT_NUM_QUARTERS,
+    transpose: CONDUCTOR_FIT_HEIGHT_TRANSPOSE,
+  };
+};
+window.setConductorFitReferenceUnits = function (widthUnits, heightUnits) {
+  var width = Number(widthUnits);
+  var height = Number(heightUnits);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    return false;
+  }
+  var widthChanged = Math.abs(width - conductorFitReferenceWidthUnits) > 1e-6;
+  var heightChanged = Math.abs(height - conductorFitReferenceHeightUnits) > 1e-6;
+  conductorFitReferenceWidthUnits = width;
+  conductorFitReferenceHeightUnits = height;
+  conductorFitReferenceReady = true;
+  if (widthChanged || heightChanged) {
+    handleConductorResponsiveResize();
+  }
+  return true;
+};
+window.getConductorFitReferenceUnits = function () {
+  return {
+    widthUnits: conductorFitReferenceWidthUnits,
+    heightUnits: conductorFitReferenceHeightUnits,
+    ready: conductorFitReferenceReady,
+  };
+};
+
+var conductorResponsiveResizeRafID = 0;
+function handleConductorResponsiveResize() {
+  if (conductorResponsiveResizeRafID) {
+    cancelAnimationFrame(conductorResponsiveResizeRafID);
+  }
+  conductorResponsiveResizeRafID = requestAnimationFrame(function () {
+    conductorResponsiveResizeRafID = 0;
+    var previousWidth = full_Width;
+    var previousHeight = full_Height;
+    var previousZoom = osmdMusicZoom;
+    ensureScoreLayeringContainer();
+    var widthChanged = Math.abs(full_Width - previousWidth) > 0.5;
+    var heightChanged = Math.abs(full_Height - previousHeight) > 0.5;
+    var zoomChanged = Math.abs(osmdMusicZoom - previousZoom) > 1e-4;
+    if ((widthChanged || heightChanged || zoomChanged) && typeof renderMusicFromSnake === 'function' && tannhauserScore) {
+      renderMusicFromSnake();
+    }
+  });
+}
+
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('resize', handleConductorResponsiveResize);
+  if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
+    window.visualViewport.addEventListener('resize', handleConductorResponsiveResize);
+  }
+}
 
 //TEMPO
 function normalizeTempoLevels(levels) {
