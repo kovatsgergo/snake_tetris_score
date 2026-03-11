@@ -150,3 +150,9 @@ scripts/
 v7-backup*
 other_versions/
 old_scores/
+
+tools/
+#tools/packaging/windows/stage/
+#tools/packaging/windows/dist/
+#tools/packaging/windows/runtime/node/node.exe
+

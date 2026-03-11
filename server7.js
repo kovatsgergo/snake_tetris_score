@@ -5,6 +5,7 @@ const path = require('path');
 const { Server } = require('ws');
 
 const PORT = process.env.PORT || 10000;
+const HOST = process.env.HOST || "127.0.0.1";
 const appConfig = require('./config.js');
 
 const app = express();
@@ -23,7 +24,7 @@ app.get('/conductor', function (_req, res) {
 
 app.use('/', express.static(__dirname + '/'));
 
-const server = app.listen(PORT, () => console.log(`Listening on ${PORT}`));
+const server = app.listen(PORT, HOST, () => console.log(`Listening on http://${HOST}:${PORT}`));
 
 const wss = new Server({ server });
 
