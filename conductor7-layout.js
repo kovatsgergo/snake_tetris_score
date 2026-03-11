@@ -212,10 +212,15 @@ function setEaten(message) {
   }
 
   var hueBin = Number.isFinite(numericTokens[3]) ? numericTokens[3] : Number(eaten[3]);
-  if (Number.isFinite(hueBin) && (typeof autoTransposeEnabled === 'undefined' || autoTransposeEnabled)) {
-    // Requested mapping: transpose = hueBin + TRANSPOSE_MIN
-    transposeSemitones = clampTransposeSemitones(hueBin + ((typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6));
-    syncTransposeInputControl();
+  if (Number.isFinite(hueBin)) {
+    var hintedTranspose = clampTransposeSemitones(hueBin + ((typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6));
+    if (typeof traceConductorEvent === 'function') {
+      traceConductorEvent('transpose.eaten-hint', {
+        hueBin: Number(hueBin),
+        hintedTranspose: Number(hintedTranspose),
+        applied: false,
+      });
+    }
   }
 }
 
@@ -233,19 +238,26 @@ function setInitialState(eatenPayload, snakePayload) {
     eaten = rawTokens;
   }
   var hueBin = Number.isFinite(numericTokens[3]) ? numericTokens[3] : Number(eaten[3]);
-  if (Number.isFinite(hueBin) && (typeof autoTransposeEnabled === 'undefined' || autoTransposeEnabled)) {
-    transposeSemitones = clampTransposeSemitones(hueBin + ((typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6));
-    syncTransposeInputControl();
+  if (Number.isFinite(hueBin)) {
+    var hintedTranspose = clampTransposeSemitones(hueBin + ((typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6));
+    if (typeof traceConductorEvent === 'function') {
+      traceConductorEvent('transpose.initial-state-hint', {
+        hueBin: Number(hueBin),
+        hintedTranspose: Number(hintedTranspose),
+        applied: false,
+      });
+    }
   }
   // Apply snake coordinates directly
   snake = String(snakePayload || '').trim().split(/\s+/).map(Number);
   snakeSnapshotVersion++;
 }
 
-function parseRoomStatePhraseDescriptor(fromValue, numValue, transposeValue) {
+function parseRoomStatePhraseDescriptor(fromValue, numValue, transposeValue, phraseSequenceValue) {
   var fromQuarter = Number(fromValue);
   var numQuarters = Number(numValue);
   var transpose = Number(transposeValue);
+  var phraseSequence = Number(phraseSequenceValue);
   if (!Number.isFinite(fromQuarter) || !Number.isFinite(numQuarters) || numQuarters <= 0) {
     return null;
   }
@@ -266,6 +278,9 @@ function parseRoomStatePhraseDescriptor(fromValue, numValue, transposeValue) {
     fromQuarter: Math.floor(fromQuarter),
     numQuarters: Math.max(1, Math.floor(numQuarters)),
     transposeSemitones: Math.floor(transpose),
+    phraseSequence: (Number.isFinite(phraseSequence) && phraseSequence >= 0)
+      ? Math.floor(phraseSequence)
+      : Number.NaN,
   };
 }
 
@@ -303,7 +318,8 @@ function readRoomStateCurrentPhrase() {
   return parseRoomStatePhraseDescriptor(
     resolveRoomStateFromQuarterValue(roomStateSnapshot.currentFrom),
     resolveRoomStateNumQuartersValue(roomStateSnapshot.currentNum),
-    resolveRoomStateTransposeValue(roomStateSnapshot.currentTranspose)
+    resolveRoomStateTransposeValue(roomStateSnapshot.currentTranspose),
+    roomStateSnapshot.currentPhraseSeq
   );
 }
 
@@ -314,7 +330,8 @@ function readRoomStateCandidatePhrase() {
   var candidate = parseRoomStatePhraseDescriptor(
     resolveRoomStateFromQuarterValue(roomStateSnapshot.candidateFrom),
     resolveRoomStateNumQuartersValue(roomStateSnapshot.candidateNum),
-    resolveRoomStateTransposeValue(roomStateSnapshot.candidateTranspose)
+    resolveRoomStateTransposeValue(roomStateSnapshot.candidateTranspose),
+    roomStateSnapshot.candidatePhraseSeq
   );
   if (!candidate) {
     return null;
@@ -325,6 +342,15 @@ function readRoomStateCandidatePhrase() {
   return candidate;
 }
 
+function phraseSequencesMatch(aSequence, bSequence) {
+  var a = Number(aSequence);
+  var b = Number(bSequence);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) {
+    return true;
+  }
+  return Math.floor(a) === Math.floor(b);
+}
+
 function phraseDescriptorEqualsSnapshot(descriptor, snapshot) {
   if (!descriptor || !snapshot) {
     return false;
@@ -332,7 +358,8 @@ function phraseDescriptorEqualsSnapshot(descriptor, snapshot) {
   return (
     Number(descriptor.fromQuarter) === Number(snapshot.fromQuarter) &&
     Number(descriptor.numQuarters) === Number(snapshot.numQuarters) &&
-    Number(descriptor.transposeSemitones) === Number(snapshot.transposeSemitones)
+    Number(descriptor.transposeSemitones) === Number(snapshot.transposeSemitones) &&
+    phraseSequencesMatch(descriptor.phraseSequence, snapshot.phraseSequence)
   );
 }
 
@@ -343,8 +370,59 @@ function phraseDescriptorsEqual(a, b) {
   return (
     Number(a.fromQuarter) === Number(b.fromQuarter) &&
     Number(a.numQuarters) === Number(b.numQuarters) &&
-    Number(a.transposeSemitones) === Number(b.transposeSemitones)
+    Number(a.transposeSemitones) === Number(b.transposeSemitones) &&
+    phraseSequencesMatch(a.phraseSequence, b.phraseSequence)
   );
+}
+
+function summarizeKeyChangesForTrace(keyChanges) {
+  var changes = Array.isArray(keyChanges) ? keyChanges : [];
+  var count = changes.length;
+  var sample = changes.slice(0, 4).map(function (change) {
+    return {
+      q: Number(change && change.q),
+      fifths: Number(change && change.fifths),
+    };
+  });
+  var first = count > 0 ? changes[0] : null;
+  var last = count > 0 ? changes[count - 1] : null;
+  return {
+    count: count,
+    firstQ: first ? Number(first.q) : Number.NaN,
+    firstFifths: first ? Number(first.fifths) : Number.NaN,
+    lastQ: last ? Number(last.q) : Number.NaN,
+    lastFifths: last ? Number(last.fifths) : Number.NaN,
+    sample: sample,
+  };
+}
+
+function summarizeSnapshotForTrace(snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+  if (snapshot.mode === 'conductor') {
+    return {
+      mode: 'conductor',
+      fromQuarter: Number(snapshot.fromQuarter),
+      numQuarters: Number(snapshot.numQuarters),
+      transposeSemitones: Number(snapshot.transposeSemitones),
+      staffCount: Array.isArray(snapshot.staffSlices) ? snapshot.staffSlices.length : 0,
+      staffKeyChanges: (snapshot.staffSlices || []).slice(0, 6).map(function (slice) {
+        return {
+          staffIndex: Number(slice && slice.staffIndex),
+          staffName: String((slice && slice.staffName) || ''),
+          keyChanges: summarizeKeyChangesForTrace(slice ? slice.keyChanges : []),
+        };
+      }),
+    };
+  }
+  return {
+    mode: String(snapshot.mode || 'single'),
+    fromQuarter: Number(snapshot.fromQuarter),
+    numQuarters: Number(snapshot.numQuarters),
+    transposeSemitones: Number(snapshot.transposeSemitones),
+    keyChanges: summarizeKeyChangesForTrace(snapshot.keyChanges),
+  };
 }
 
 async function syncAuthoritativeCandidatePreview(currentDescriptor) {
@@ -359,15 +437,21 @@ async function syncAuthoritativeCandidatePreview(currentDescriptor) {
   if (phraseDescriptorEqualsSnapshot(candidateDescriptor, phrasePreviewSnapshot)) {
     return true;
   }
-  var previousTranspose = transposeSemitones;
-  transposeSemitones = candidateDescriptor.transposeSemitones;
   var candidateSnapshot = buildConductorPhraseSnapshot(
     candidateDescriptor.fromQuarter,
-    candidateDescriptor.numQuarters
+    candidateDescriptor.numQuarters,
+    candidateDescriptor.transposeSemitones,
+    candidateDescriptor.phraseSequence
   );
-  transposeSemitones = previousTranspose;
   if (!candidateSnapshot) {
     return false;
+  }
+  if (typeof traceConductorEvent === 'function') {
+    traceConductorEvent('preview.candidate-sync', {
+      currentDescriptor: currentDescriptor,
+      candidateDescriptor: candidateDescriptor,
+      candidateSnapshot: summarizeSnapshotForTrace(candidateSnapshot),
+    });
   }
   return showPhrasePreview(candidateSnapshot);
 }
@@ -455,17 +539,7 @@ async function loadTannhauserMxl() {
 var conductorFitReferenceMeasurePromise = null;
 
 function buildConductorSnapshotForFitCase(fromQuarter, numQuarters, transposeOverride) {
-  var previousTranspose = transposeSemitones;
-  transposeSemitones = Number.isFinite(Number(transposeOverride))
-    ? Math.floor(Number(transposeOverride))
-    : previousTranspose;
-  var snapshot = null;
-  try {
-    snapshot = buildConductorPhraseSnapshot(fromQuarter, numQuarters);
-  } finally {
-    transposeSemitones = previousTranspose;
-  }
-  return snapshot;
+  return buildConductorPhraseSnapshot(fromQuarter, numQuarters, transposeOverride, Number.NaN);
 }
 
 function readConductorFitWidthCaseConfig() {
@@ -3715,9 +3789,15 @@ function drawAndAnimatePlaybarTimeMapped(
     }
 
     if (!Number.isFinite(phrasePhaseAnchorQuarters)) {
-      phrasePhaseAnchorQuarters = Math.floor(absoluteQuarters / safeNumQuarters) * safeNumQuarters;
+      // Start each freshly rendered phrase from "now"; authoritative room beat sync
+      // (below) can refine this once the room phrase-length metadata matches.
+      phrasePhaseAnchorQuarters = absoluteQuarters;
     }
-    if (Number.isFinite(observedRoomQuarter) && Number.isFinite(observedRoomBeat)) {
+    if (
+      Number.isFinite(observedRoomQuarter) &&
+      Number.isFinite(observedRoomBeat) &&
+      observedRoomBeats === totalQuarterBeats
+    ) {
       var boundaryQuarter = observedRoomQuarter - (observedRoomBeat - 1);
       if (Number.isFinite(boundaryQuarter)) {
         phrasePhaseAnchorQuarters = boundaryQuarter;
@@ -3785,12 +3865,25 @@ function drawAndAnimatePlaybarTimeMapped(
         lastRoomBeatInPhrase = observedRoomBeat;
       } else if (observedRoomQuarter > lastRoomQuarterCounter) {
         var pendingBoundaries = Math.max(0, Math.floor(Number(pendingRoomBoundaryCount) || 0));
-        if (pendingBoundaries > 0 || observedRoomBeat === 1) {
+        var isBoundaryBeat = observedRoomBeat === 1;
+        if (isBoundaryBeat) {
           pendingRoomBoundaryCount = 0;
           if (handleCycleBoundary(now, observedRoomBeats)) {
             return;
           }
           swapTriggeredThisCycle = false;
+        } else if (pendingBoundaries > 0) {
+          // If a beat-1 packet arrived late/out-of-order, do not commit mid-phrase.
+          // Drop stale pending boundary markers and wait for the next true boundary.
+          pendingRoomBoundaryCount = 0;
+          if (typeof traceConductorEvent === 'function') {
+            traceConductorEvent('boundary.drop-stale-pending', {
+              observedRoomQuarter: observedRoomQuarter,
+              observedRoomBeat: observedRoomBeat,
+              observedRoomBeats: observedRoomBeats,
+              pendingBoundaries: pendingBoundaries,
+            });
+          }
         }
         lastRoomQuarterCounter = observedRoomQuarter;
         lastRoomBeatInPhrase = observedRoomBeat;
@@ -3813,7 +3906,12 @@ function drawAndAnimatePlaybarTimeMapped(
     }
 
     // Trigger phrase swap 1 eighth note (0.5 quarters) before the end of the phrase.
+    // With authoritative room clocks, only trust this early trigger when the room-reported
+    // phrase length matches the currently rendered phrase length. Otherwise we can start a
+    // stale preview swap immediately after a commit and cause a second key-signature jump.
+    var canUseEarlySwapTrigger = !usedRoomBeatBoundary || (observedRoomBeats === totalQuarterBeats);
     if (
+      canUseEarlySwapTrigger &&
       !swapTriggeredThisCycle &&
       phrasePreviewAwaitingSwap &&
       !phraseSwapInProgress &&
@@ -3864,20 +3962,26 @@ function drawAndAnimatePlaybarTimeMapped(
   playbarAnimationFrame = requestAnimationFrame(step);
 }
 
-function buildPhraseSnapshot(fromQuarter, numQuarters, staffIndex) {
+function buildPhraseSnapshot(fromQuarter, numQuarters, staffIndex, transposeOverride, phraseSequence) {
   if (!tannhauserScore) {
     return null;
   }
   var safeFrom = Math.floor(Number(fromQuarter));
   var safeNum = Math.max(1, Math.floor(Number(numQuarters)));
   var safeStaff = Math.max(0, Math.floor(Number(staffIndex)));
+  var resolvedTranspose = Number.isFinite(Number(transposeOverride))
+    ? clampTransposeSemitones(Math.floor(Number(transposeOverride)))
+    : clampTransposeSemitones(transposeSemitones);
+  var resolvedPhraseSequence = Number.isFinite(Number(phraseSequence))
+    ? Math.floor(Number(phraseSequence))
+    : Number.NaN;
 
   var sliceData = tannhauserScore.getExactSliceData(safeFrom, safeNum, safeStaff);
   var sourceKeyChanges = sliceData.keyChanges || [{ q: safeFrom, fifths: 0 }];
-  var transposedKeyChanges = transposeKeyChanges(sourceKeyChanges, transposeSemitones);
+  var transposedKeyChanges = transposeKeyChanges(sourceKeyChanges, resolvedTranspose);
   var transposedEvents = transposeSliceEvents(
     sliceData.events,
-    transposeSemitones,
+    resolvedTranspose,
     safeFrom,
     safeNum,
     sliceData.barlines,
@@ -3891,7 +3995,8 @@ function buildPhraseSnapshot(fromQuarter, numQuarters, staffIndex) {
     barlinesQ: (sliceData.barlines || []).slice(),
     keyChanges: transposedKeyChanges,
     preparedEvents: transposedEvents,
-    transposeSemitones: transposeSemitones,
+    transposeSemitones: resolvedTranspose,
+    phraseSequence: resolvedPhraseSequence,
   };
 }
 
@@ -3911,12 +4016,18 @@ function sortedUniqueQuarterArray(values) {
   return out;
 }
 
-function buildConductorPhraseSnapshot(fromQuarter, numQuarters) {
+function buildConductorPhraseSnapshot(fromQuarter, numQuarters, transposeOverride, phraseSequence) {
   if (!tannhauserScore) {
     return null;
   }
   var safeFrom = Math.floor(Number(fromQuarter));
   var safeNum = Math.max(1, Math.floor(Number(numQuarters)));
+  var resolvedTranspose = Number.isFinite(Number(transposeOverride))
+    ? clampTransposeSemitones(Math.floor(Number(transposeOverride)))
+    : clampTransposeSemitones(transposeSemitones);
+  var resolvedPhraseSequence = Number.isFinite(Number(phraseSequence))
+    ? Math.floor(Number(phraseSequence))
+    : Number.NaN;
   var staffCount = tannhauserScore.getStaffCount();
   if (!Number.isFinite(staffCount) || staffCount <= 0) {
     return null;
@@ -3927,10 +4038,10 @@ function buildConductorPhraseSnapshot(fromQuarter, numQuarters) {
   for (var staffIdx = 0; staffIdx < staffCount; staffIdx++) {
     var sliceData = tannhauserScore.getExactSliceData(safeFrom, safeNum, staffIdx);
     var sourceKeyChanges = sliceData.keyChanges || [{ q: safeFrom, fifths: 0 }];
-    var transposedKeyChanges = transposeKeyChanges(sourceKeyChanges, transposeSemitones);
+    var transposedKeyChanges = transposeKeyChanges(sourceKeyChanges, resolvedTranspose);
     var transposedEvents = transposeSliceEvents(
       sliceData.events,
-      transposeSemitones,
+      resolvedTranspose,
       safeFrom,
       safeNum,
       sliceData.barlines,
@@ -3958,7 +4069,8 @@ function buildConductorPhraseSnapshot(fromQuarter, numQuarters) {
     numQuarters: safeNum,
     barlinesQ: sortedUniqueQuarterArray(mergedBarlines),
     staffSlices: staffSlices,
-    transposeSemitones: transposeSemitones,
+    transposeSemitones: resolvedTranspose,
+    phraseSequence: resolvedPhraseSequence,
     referenceStaffIndex: Math.max(0, Math.min(selectedStaff(), staffCount - 1)),
   };
 }
@@ -4665,10 +4777,6 @@ async function renderPhraseSnapshot(snapshot, options) {
     return false;
   }
   options = options || {};
-  if (Number.isFinite(snapshot.transposeSemitones)) {
-    transposeSemitones = snapshot.transposeSemitones;
-    syncTransposeInputControl();
-  }
   var commonOptions = {
     skipDynamics: !!options.skipDynamics,
     skipPlayback: !!options.skipPlayback,
@@ -4717,7 +4825,6 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
   var savedMainScoreElement = mainScoreElement;
   var savedRenderInfoText = readElementText('renderInfo');
   var savedDiagnostics = lastRenderDiagnostics;
-  var savedTransposeSemitones = transposeSemitones;
   var savedOsmdInstance = osmdInstance;
   var savedOsmdContainerRef = osmdContainerRef;
   var savedOsmdLayout = Object.assign({}, osmdLayout);
@@ -4759,8 +4866,6 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
     osmdContainerRef = savedOsmdContainerRef;
     osmdLayout = savedOsmdLayout;
     lastRenderDiagnostics = savedDiagnostics;
-    transposeSemitones = savedTransposeSemitones;
-    syncTransposeInputControl();
     setRenderInfo(savedRenderInfoText);
     if (tempContainer.parentNode) {
       tempContainer.parentNode.removeChild(tempContainer);
@@ -4799,6 +4904,11 @@ async function showPhrasePreview(snapshot) {
   phrasePreviewSnapshot = snapshot;
   phrasePreviewAwaitingSwap = true;
   phraseSwapTargetSnapshot = null;
+  if (typeof traceConductorEvent === 'function') {
+    traceConductorEvent('preview.show', {
+      snapshot: summarizeSnapshotForTrace(snapshot),
+    });
+  }
   return true;
 }
 
@@ -4806,12 +4916,34 @@ async function commitPhraseSwapTargetSnapshot(snapshot) {
   if (!snapshot) {
     return;
   }
+  if (Number.isFinite(Number(snapshot.transposeSemitones))) {
+    var previousTranspose = Number(transposeSemitones);
+    transposeSemitones = clampTransposeSemitones(Math.floor(Number(snapshot.transposeSemitones)));
+    syncTransposeInputControl();
+    if (typeof traceConductorEvent === 'function') {
+      traceConductorEvent('transpose.from-swap-commit', {
+        previousTranspose: previousTranspose,
+        nextTranspose: Number(transposeSemitones),
+        snapshot: summarizeSnapshotForTrace(snapshot),
+      });
+    }
+  }
+  if (typeof traceConductorEvent === 'function') {
+    traceConductorEvent('swap.commit-start', {
+      snapshot: summarizeSnapshotForTrace(snapshot),
+    });
+  }
   stopPlaybarMotion();
   await renderPhraseSnapshot(snapshot);
   currentPhraseSnapshot = snapshot;
   lockedFromQuarter = snapshot.fromQuarter;
   lockedNumQuarters = snapshot.numQuarters;
   refreshDebugSliceInputs(snapshot.fromQuarter, snapshot.numQuarters);
+  if (typeof traceConductorEvent === 'function') {
+    traceConductorEvent('swap.commit-done', {
+      snapshot: summarizeSnapshotForTrace(snapshot),
+    });
+  }
 }
 
 function redrawDynamicsOnly() {
@@ -4847,13 +4979,23 @@ async function renderMusicFromSnakeCore() {
 
   lockedFromQuarter = currentDescriptor.fromQuarter;
   lockedNumQuarters = currentDescriptor.numQuarters;
-  transposeSemitones = currentDescriptor.transposeSemitones;
+  var previousTranspose = Number(transposeSemitones);
+  transposeSemitones = clampTransposeSemitones(Math.floor(Number(currentDescriptor.transposeSemitones)));
+  if (typeof traceConductorEvent === 'function') {
+    traceConductorEvent('transpose.from-room-current', {
+      currentDescriptor: currentDescriptor,
+      previousTranspose: previousTranspose,
+      nextTranspose: Number(transposeSemitones),
+    });
+  }
   syncTransposeInputControl();
   refreshDebugSliceInputs(currentDescriptor.fromQuarter, currentDescriptor.numQuarters);
 
   var snapshot = buildConductorPhraseSnapshot(
     currentDescriptor.fromQuarter,
-    currentDescriptor.numQuarters
+    currentDescriptor.numQuarters,
+    currentDescriptor.transposeSemitones,
+    currentDescriptor.phraseSequence
   );
   if (!snapshot) {
     clearEatenRenderPendingState();
@@ -4892,6 +5034,14 @@ function handleRoomStateUpdate() {
     applyRoomStateDynamics(false);
   }
   var currentDescriptor = readRoomStateCurrentPhrase();
+  if (typeof traceConductorEvent === 'function') {
+    traceConductorEvent('room.state-handle-update', {
+      hasPlaybarFrame: !!playbarAnimationFrame,
+      hasCurrentSnapshot: !!currentPhraseSnapshot,
+      hasCurrentDescriptor: !!currentDescriptor,
+      currentDescriptor: currentDescriptor,
+    });
+  }
   if (playbarAnimationFrame && currentPhraseSnapshot && currentDescriptor) {
     // Keep commit strictly on boundary; only refresh candidate preview while running.
     syncAuthoritativeCandidatePreview(currentDescriptor);

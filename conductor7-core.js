@@ -183,9 +183,189 @@ var phraseSwapInProgress = false;
 var phraseSwapTargetSnapshot = null;
 var phraseDeferredSwapTimer = 0;
 var currentPhraseSnapshot = null;
+var TRANSPOSE_TRACE_STORAGE_KEY = 'conductor7TransposeTraceEnabled';
+var transposeTraceEnabled = true;
+var transposeTraceBufferLimit = 600;
+var transposeTraceSeq = 0;
+var transposeTraceBuffer = [];
 var STEM_RULES_STORAGE_KEY = 'osmdStemRulesEnabled';
 var stemRulesEnabled = true;
 var stemRulesExtraStemLengthInSpaces = 0.0;
+
+function cloneTraceValue(value, depth) {
+  var maxDepth = Number.isFinite(Number(depth)) ? Number(depth) : 0;
+  if (maxDepth <= 0) {
+    return '[max-depth]';
+  }
+  if (value === null || value === undefined) {
+    return value;
+  }
+  var valueType = typeof value;
+  if (valueType === 'number' || valueType === 'string' || valueType === 'boolean') {
+    return value;
+  }
+  if (valueType === 'bigint') {
+    return String(value);
+  }
+  if (valueType === 'function') {
+    return '[function]';
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map(function (item) {
+      return cloneTraceValue(item, maxDepth - 1);
+    });
+  }
+  var out = {};
+  Object.keys(value).slice(0, 20).forEach(function (key) {
+    out[key] = cloneTraceValue(value[key], maxDepth - 1);
+  });
+  return out;
+}
+
+function parseTransposeTraceEnabled(value, fallback) {
+  if (typeof value === 'string') {
+    var normalized = value.trim().toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes') {
+      return true;
+    }
+    if (normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no') {
+      return false;
+    }
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  return !!fallback;
+}
+
+function resolveInitialTransposeTraceEnabled() {
+  var fallback = true;
+  try {
+    var search = (window && window.location && window.location.search) ? String(window.location.search) : '';
+    if (search) {
+      var params = new URLSearchParams(search);
+      if (params.has('traceTranspose')) {
+        return parseTransposeTraceEnabled(params.get('traceTranspose'), fallback);
+      }
+      if (params.has('trace')) {
+        return parseTransposeTraceEnabled(params.get('trace'), fallback);
+      }
+    }
+  } catch (error) {
+    // ignore malformed location or URLSearchParams issues
+  }
+  try {
+    var storedValue = localStorage.getItem(TRANSPOSE_TRACE_STORAGE_KEY);
+    if (storedValue !== null && storedValue !== undefined && storedValue !== '') {
+      return parseTransposeTraceEnabled(storedValue, fallback);
+    }
+  } catch (error) {
+    // ignore storage failures
+  }
+  return fallback;
+}
+
+function buildTransposeTraceStateDigest() {
+  var roomSnapshot = roomStateSnapshot || {};
+  return {
+    transposeSemitones: Number(transposeSemitones),
+    autoTransposeEnabled: !!autoTransposeEnabled,
+    roomStateVersion: Number(roomStateVersion) || 0,
+    roomCurrentTranspose: Number(roomSnapshot.currentTranspose),
+    roomCandidateTranspose: Number(roomSnapshot.candidateTranspose),
+    roomCurrentPhraseSeq: Number(roomSnapshot.currentPhraseSeq),
+    roomCandidatePhraseSeq: Number(roomSnapshot.candidatePhraseSeq),
+    currentSnapshotTranspose: currentPhraseSnapshot ? Number(currentPhraseSnapshot.transposeSemitones) : Number.NaN,
+    pendingSnapshotTranspose: phrasePreviewSnapshot ? Number(phrasePreviewSnapshot.transposeSemitones) : Number.NaN,
+    swapInProgress: !!phraseSwapInProgress,
+    previewAwaitingSwap: !!phrasePreviewAwaitingSwap,
+  };
+}
+
+function traceConductorEvent(tag, payload) {
+  if (!transposeTraceEnabled) {
+    return null;
+  }
+  var serverTs = Number.NaN;
+  if (typeof serverNowMs === 'function') {
+    serverTs = Number(serverNowMs());
+  } else if (Number.isFinite(Number(lastServerMessageTimeMs))) {
+    serverTs = Number(lastServerMessageTimeMs);
+  }
+  var entry = {
+    seq: ++transposeTraceSeq,
+    tsClientMs: Date.now(),
+    tsServerMs: Number.isFinite(serverTs) ? Math.round(serverTs) : null,
+    tag: String(tag || 'event'),
+    state: buildTransposeTraceStateDigest(),
+  };
+  if (payload !== undefined) {
+    entry.payload = cloneTraceValue(payload, 4);
+  }
+  transposeTraceBuffer.push(entry);
+  if (transposeTraceBuffer.length > transposeTraceBufferLimit) {
+    transposeTraceBuffer.splice(0, transposeTraceBuffer.length - transposeTraceBufferLimit);
+  }
+  return entry;
+}
+
+function getTransposeTrace(limit) {
+  var maxItems = Number.isFinite(Number(limit)) ? Math.max(1, Math.floor(Number(limit))) : transposeTraceBuffer.length;
+  if (maxItems >= transposeTraceBuffer.length) {
+    return transposeTraceBuffer.slice();
+  }
+  return transposeTraceBuffer.slice(transposeTraceBuffer.length - maxItems);
+}
+
+function clearTransposeTrace() {
+  transposeTraceBuffer.length = 0;
+  transposeTraceSeq = 0;
+}
+
+function setTransposeTraceEnabled(enabled, options) {
+  options = options || {};
+  var nextValue = parseTransposeTraceEnabled(enabled, transposeTraceEnabled);
+  transposeTraceEnabled = !!nextValue;
+  try {
+    localStorage.setItem(TRANSPOSE_TRACE_STORAGE_KEY, transposeTraceEnabled ? '1' : '0');
+  } catch (error) {
+    // ignore storage failures
+  }
+  if (!options.silent && transposeTraceEnabled) {
+    traceConductorEvent('trace.enabled', { enabled: true });
+  }
+  return transposeTraceEnabled;
+}
+
+function dumpTransposeTrace(limit) {
+  var snapshot = getTransposeTrace(limit);
+  if (typeof console !== 'undefined' && typeof console.table === 'function') {
+    console.table(snapshot.map(function (entry) {
+      return {
+        seq: entry.seq,
+        tag: entry.tag,
+        tsClientMs: entry.tsClientMs,
+        transpose: entry && entry.state ? entry.state.transposeSemitones : null,
+        roomCurrentTranspose: entry && entry.state ? entry.state.roomCurrentTranspose : null,
+        roomCandidateTranspose: entry && entry.state ? entry.state.roomCandidateTranspose : null,
+      };
+    }));
+  }
+  return snapshot;
+}
+
+transposeTraceEnabled = resolveInitialTransposeTraceEnabled();
+window.traceConductorEvent = traceConductorEvent;
+window.getTransposeTrace = getTransposeTrace;
+window.clearTransposeTrace = clearTransposeTrace;
+window.setTransposeTraceEnabled = setTransposeTraceEnabled;
+window.dumpTransposeTrace = dumpTransposeTrace;
+if (transposeTraceEnabled) {
+  traceConductorEvent('trace.init', { enabled: true });
+}
 
 function parseStemRulesEnabled(value) {
   if (typeof value === 'string') {
@@ -636,7 +816,12 @@ function setAutoTempo(enabled) {
 window.setAutoTempo = setAutoTempo;
 
 function setAutoTranspose(enabled) {
+  var previousValue = !!autoTransposeEnabled;
   autoTransposeEnabled = !!enabled;
+  traceConductorEvent('transpose.auto-toggle', {
+    previousEnabled: previousValue,
+    nextEnabled: !!autoTransposeEnabled,
+  });
   if (!autoTransposeEnabled) {
     var dropdown = document.getElementById('debugTransposeSemitones');
     if (dropdown) {
@@ -1068,7 +1253,7 @@ function setRoomClock(roomId, quarterCounter, beatInPhrase, beatsPerPhrase, bpm,
   setBeatIndexDisplay(roomClockBeatInPhrase, roomClockBeatsPerPhrase);
 }
 
-function setRoomState(roomId, version, paused, currentFrom, currentNum, currentTranspose, candidateFrom, candidateNum, candidateTranspose, pendingTempo, bpm, serverMs, dynamicsVersion, dynamicsCsv) {
+function setRoomState(roomId, version, paused, currentFrom, currentNum, currentTranspose, candidateFrom, candidateNum, candidateTranspose, pendingTempo, bpm, serverMs, dynamicsVersion, dynamicsCsv, currentPhraseSeq, candidatePhraseSeq) {
   void roomId;
   var parsedVersion = Number(version);
   if (!Number.isFinite(parsedVersion)) {
@@ -1091,8 +1276,24 @@ function setRoomState(roomId, version, paused, currentFrom, currentNum, currentT
     serverMs: normalizeServerSentMs(serverMs, Date.now()),
     dynamicsVersion: Number(dynamicsVersion),
     dynamicsCsv: (dynamicsCsv === undefined || dynamicsCsv === null) ? '' : String(dynamicsCsv),
+    currentPhraseSeq: Number(currentPhraseSeq),
+    candidatePhraseSeq: Number(candidatePhraseSeq),
     version: parsedVersion,
   };
+  traceConductorEvent('room.state-received', {
+    version: parsedVersion,
+    currentFrom: roomStateSnapshot.currentFrom,
+    currentNum: roomStateSnapshot.currentNum,
+    currentTranspose: roomStateSnapshot.currentTranspose,
+    candidateFrom: roomStateSnapshot.candidateFrom,
+    candidateNum: roomStateSnapshot.candidateNum,
+    candidateTranspose: roomStateSnapshot.candidateTranspose,
+    currentPhraseSeq: roomStateSnapshot.currentPhraseSeq,
+    candidatePhraseSeq: roomStateSnapshot.candidatePhraseSeq,
+    pendingTempo: roomStateSnapshot.pendingTempo,
+    bpm: roomStateSnapshot.bpm,
+    paused: !!roomStateSnapshot.paused,
+  });
 }
 
 function applyClockSyncSample(clientSentMs, serverMs, clientReceivedMs) {
@@ -1264,6 +1465,12 @@ function startPhraseSwapAnimation(nowMs) {
   phraseSwapInProgress = true;
   phrasePreviewAwaitingSwap = false;
   phraseSwapTargetSnapshot = phrasePreviewSnapshot;
+  traceConductorEvent('swap.start', {
+    nowMs: Number(nowMs),
+    targetFrom: phraseSwapTargetSnapshot ? Number(phraseSwapTargetSnapshot.fromQuarter) : Number.NaN,
+    targetNum: phraseSwapTargetSnapshot ? Number(phraseSwapTargetSnapshot.numQuarters) : Number.NaN,
+    targetTranspose: phraseSwapTargetSnapshot ? Number(phraseSwapTargetSnapshot.transposeSemitones) : Number.NaN,
+  });
 
   if (phraseSwapAnimationFrame) {
     cancelAnimationFrame(phraseSwapAnimationFrame);
@@ -1294,6 +1501,12 @@ function startPhraseSwapAnimation(nowMs) {
     phraseSwapTargetSnapshot = null;
     removePhrasePreviewOverlay(false);
     if (targetSnapshot) {
+      traceConductorEvent('swap.complete', {
+        nowMs: Number(now),
+        targetFrom: Number(targetSnapshot.fromQuarter),
+        targetNum: Number(targetSnapshot.numQuarters),
+        targetTranspose: Number(targetSnapshot.transposeSemitones),
+      });
       commitPhraseSwapTargetSnapshot(targetSnapshot, now);
     }
   }
@@ -1332,6 +1545,11 @@ function forceCommitPendingPreviewSwap() {
     return false;
   }
   var snapshot = phrasePreviewSnapshot;
+  traceConductorEvent('swap.force-commit', {
+    targetFrom: Number(snapshot.fromQuarter),
+    targetNum: Number(snapshot.numQuarters),
+    targetTranspose: Number(snapshot.transposeSemitones),
+  });
   removePhrasePreviewOverlay(false);
   commitPhraseSwapTargetSnapshot(snapshot);
   return true;
@@ -2024,7 +2242,15 @@ function buildCaseReportData() {
       pendingSwap: !!phrasePreviewAwaitingSwap,
       swapInProgress: !!phraseSwapInProgress,
       deferredSnakeRenderPending: !!deferredSnakeRenderPending,
+      transposeSemitones: Number(transposeSemitones),
+      autoTransposeEnabled: !!autoTransposeEnabled,
+      roomStateVersion: Number(roomStateVersion) || 0,
+      roomCurrentTranspose: roomStateSnapshot ? Number(roomStateSnapshot.currentTranspose) : null,
+      roomCandidateTranspose: roomStateSnapshot ? Number(roomStateSnapshot.candidateTranspose) : null,
+      roomCurrentPhraseSeq: roomStateSnapshot ? Number(roomStateSnapshot.currentPhraseSeq) : null,
+      roomCandidatePhraseSeq: roomStateSnapshot ? Number(roomStateSnapshot.candidatePhraseSeq) : null,
     },
+    traceTail: getTransposeTrace(80),
   };
 }
 
@@ -2100,7 +2326,14 @@ function syncTransposeInputControl() {
 }
 
 function setTransposeSemitones(value) {
+  var previousTranspose = Number(transposeSemitones);
   transposeSemitones = clampTransposeSemitones(value);
+  traceConductorEvent('transpose.manual-set', {
+    input: value,
+    previousTranspose: previousTranspose,
+    nextTranspose: Number(transposeSemitones),
+    autoTransposeEnabled: !!autoTransposeEnabled,
+  });
   syncTransposeInputControl();
   renderMusicFromSnake();
 }

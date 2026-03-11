@@ -264,6 +264,12 @@ function buildRoomStateMessage(room, serverNowMs) {
   var candidateFrom = room.hasCandidate ? room.candidateFromQuarter : -1;
   var candidateNum = room.hasCandidate ? room.candidateNumQuarters : -1;
   var candidateTranspose = room.hasCandidate ? room.candidateTranspose : -1;
+  var currentPhraseSeq = Number.isFinite(Number(room.currentPhraseSeq)) && Number(room.currentPhraseSeq) >= 0
+    ? Math.floor(Number(room.currentPhraseSeq))
+    : 0;
+  var candidatePhraseSeq = room.hasCandidate && Number.isFinite(Number(room.candidatePhraseSeq)) && Number(room.candidatePhraseSeq) >= 0
+    ? Math.floor(Number(room.candidatePhraseSeq))
+    : -1;
   var pendingTempo = Number.isFinite(Number(room.transport && room.transport.pendingTempoBpm))
     ? clampTransportBpm(room.transport.pendingTempoBpm).toFixed(3)
     : '-1';
@@ -287,7 +293,9 @@ function buildRoomStateMessage(room, serverNowMs) {
     clampTransportBpm(room.transport.bpm).toFixed(3) + ' ' +
     Math.round(now) + ' ' +
     dynamicsVersion + ' ' +
-    dynamicsPayload;
+    dynamicsPayload + ' ' +
+    currentPhraseSeq + ' ' +
+    candidatePhraseSeq;
 }
 
 function buildRoomTempoControlMessage(room) {
@@ -410,10 +418,14 @@ function promoteCandidateIfAvailable(room, nowMs) {
   room.currentFromQuarter = room.candidateFromQuarter;
   room.currentNumQuarters = room.candidateNumQuarters;
   room.currentTranspose = room.candidateTranspose;
+  if (Number.isFinite(Number(room.candidatePhraseSeq)) && Number(room.candidatePhraseSeq) >= 0) {
+    room.currentPhraseSeq = Math.floor(Number(room.candidatePhraseSeq));
+  }
   room.transport.beatsPerPhrase = Math.max(1, Math.floor(Number(room.currentNumQuarters) || 1));
   room.candidateFromQuarter = -1;
   room.candidateNumQuarters = -1;
   room.candidateTranspose = -1;
+  room.candidatePhraseSeq = -1;
   room.hasCandidate = false;
   markStateChanged(room);
   void nowMs;
@@ -550,11 +562,14 @@ class Room {
     this.currentFromQuarter = defaultPhrase.fromQuarter;
     this.currentNumQuarters = Math.max(1, defaultPhrase.numQuarters);
     this.currentTranspose = 0;
+    this.currentPhraseSeq = 0;
 
     this.hasCandidate = false;
     this.candidateFromQuarter = -1;
     this.candidateNumQuarters = -1;
     this.candidateTranspose = -1;
+    this.candidatePhraseSeq = -1;
+    this.nextPhraseSeq = 1;
 
     this.pendingEatenInfo = null;
     this.currentDynamicsMessage = '';
@@ -851,6 +866,10 @@ wss.on('connection', (ws, req) => {
     if (message.startsWith('eaten ')) {
       roomFromSnake.lastEatenMessage = message;
       roomFromSnake.pendingEatenInfo = parseEatenInfo(message);
+      if (roomFromSnake.pendingEatenInfo) {
+        roomFromSnake.pendingEatenInfo.phraseSeq = roomFromSnake.nextPhraseSeq;
+        roomFromSnake.nextPhraseSeq += 1;
+      }
       roomFromSnake.awaitingPostEatSnap = true;
 
       var tacetMessage = buildTacetMessage(message, roomFromSnake.staffCount);
@@ -885,6 +904,9 @@ wss.on('connection', (ws, req) => {
         roomFromSnake.candidateFromQuarter = parsedPhrase.fromQuarter;
         roomFromSnake.candidateNumQuarters = parsedPhrase.numQuarters;
         roomFromSnake.candidateTranspose = roomFromSnake.pendingEatenInfo.transpose;
+        roomFromSnake.candidatePhraseSeq = Number.isFinite(Number(roomFromSnake.pendingEatenInfo.phraseSeq))
+          ? Math.floor(Number(roomFromSnake.pendingEatenInfo.phraseSeq))
+          : -1;
         roomFromSnake.pendingEatenInfo = null;
         roomFromSnake.hasCandidate = true;
         markStateChanged(roomFromSnake);

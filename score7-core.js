@@ -923,7 +923,7 @@ function setRoomClock(roomId, quarterCounter, beatInPhrase, beatsPerPhrase, bpm,
   setBeatIndexDisplay(roomClockBeatInPhrase, roomClockBeatsPerPhrase);
 }
 
-function setRoomState(roomId, version, paused, currentFrom, currentNum, currentTranspose, candidateFrom, candidateNum, candidateTranspose, pendingTempo, bpm, serverMs, dynamicsVersion, dynamicsCsv) {
+function setRoomState(roomId, version, paused, currentFrom, currentNum, currentTranspose, candidateFrom, candidateNum, candidateTranspose, pendingTempo, bpm, serverMs, dynamicsVersion, dynamicsCsv, currentPhraseSeq, candidatePhraseSeq) {
   void roomId;
   var parsedVersion = Number(version);
   if (!Number.isFinite(parsedVersion)) {
@@ -946,6 +946,8 @@ function setRoomState(roomId, version, paused, currentFrom, currentNum, currentT
     serverMs: normalizeServerSentMs(serverMs, Date.now()),
     dynamicsVersion: Number(dynamicsVersion),
     dynamicsCsv: (dynamicsCsv === undefined || dynamicsCsv === null) ? '' : String(dynamicsCsv),
+    currentPhraseSeq: Number(currentPhraseSeq),
+    candidatePhraseSeq: Number(candidatePhraseSeq),
     version: parsedVersion,
   };
 }
