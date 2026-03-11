@@ -10,7 +10,11 @@ const appConfig = require('./config.js');
 const app = express();
 
 app.get('/score', function (_req, res) {
-  res.sendFile(path.join(__dirname, 'index7.html'));
+  res.sendFile(path.join(__dirname, 'score7.html'));
+});
+
+app.get('/index7.html', function (_req, res) {
+  res.sendFile(path.join(__dirname, 'score7.html'));
 });
 
 app.get('/conductor', function (_req, res) {
@@ -67,7 +71,28 @@ function getDefaultBpm() {
   return TRANSPORT_DEFAULT_BPM;
 }
 
-function tempoControlToBpm(controlValue) {
+function getDefaultTempoIndex() {
+  if (RESOLVED_TEMPO_TABLE_BPM.length >= 2) {
+    return 1;
+  }
+  return 0;
+}
+
+function clampTempoIndex(index) {
+  var numeric = Number(index);
+  if (!Number.isFinite(numeric)) {
+    return getDefaultTempoIndex();
+  }
+  var intIndex = Math.floor(numeric);
+  return Math.max(0, Math.min(RESOLVED_TEMPO_TABLE_BPM.length - 1, intIndex));
+}
+
+function tempoIndexToBpm(index) {
+  var safeIndex = clampTempoIndex(index);
+  return clampTransportBpm(RESOLVED_TEMPO_TABLE_BPM[safeIndex]);
+}
+
+function tempoControlToIndex(controlValue) {
   var control = Number(controlValue);
   if (!Number.isFinite(control)) {
     return null;
@@ -76,8 +101,15 @@ function tempoControlToBpm(controlValue) {
   if (!Number.isFinite(index)) {
     return null;
   }
-  index = Math.max(0, Math.min(RESOLVED_TEMPO_TABLE_BPM.length - 1, index));
-  return clampTransportBpm(RESOLVED_TEMPO_TABLE_BPM[index]);
+  return clampTempoIndex(index);
+}
+
+function tempoControlToBpm(controlValue) {
+  var index = tempoControlToIndex(controlValue);
+  if (!Number.isFinite(index)) {
+    return null;
+  }
+  return tempoIndexToBpm(index);
 }
 
 function buildTempoTableMessage() {
@@ -258,6 +290,16 @@ function buildRoomStateMessage(room, serverNowMs) {
     dynamicsPayload;
 }
 
+function buildRoomTempoControlMessage(room) {
+  if (!room) {
+    return '';
+  }
+  return 'ROOM_TEMPO_CONTROL ' +
+    room.ID + ' ' +
+    (room.tempoAutoEnabled ? 1 : 0) + ' ' +
+    clampTempoIndex(room.tempoControlIndex);
+}
+
 function sendRoomClockToClient(client, room, serverNowMs) {
   if (!client || client.readyState !== 1 || !room) {
     return;
@@ -276,6 +318,13 @@ function sendRoomStateToClient(client, room, serverNowMs) {
   client.send(buildRoomStateMessage(room, now));
 }
 
+function sendRoomTempoControlToClient(client, room) {
+  if (!client || client.readyState !== 1 || !room) {
+    return;
+  }
+  client.send(buildRoomTempoControlMessage(room));
+}
+
 function broadcastRoomClock(room, serverNowMs) {
   if (!room || !room.clients || room.clients.length === 0) {
     return;
@@ -288,6 +337,19 @@ function broadcastRoomClock(room, serverNowMs) {
     }
     client.send('SRVTIME ' + now);
     client.send(clockMessage);
+  });
+}
+
+function broadcastRoomTempoControl(room) {
+  if (!room || !room.clients || room.clients.length === 0) {
+    return;
+  }
+  var tempoControlMessage = buildRoomTempoControlMessage(room);
+  room.clients.forEach(function (client) {
+    if (!client || client.readyState !== 1) {
+      return;
+    }
+    client.send(tempoControlMessage);
   });
 }
 
@@ -304,6 +366,23 @@ function broadcastRoomState(room, serverNowMs) {
     client.send('SRVTIME ' + now);
     client.send(stateMessage);
   });
+}
+
+function parseClientTempoControlMessage(message) {
+  if (typeof message !== 'string' || !message.startsWith('ROOM_TEMPO_CONTROL ')) {
+    return null;
+  }
+  var parts = message.trim().split(/\s+/);
+  if (parts.length < 3) {
+    return null;
+  }
+  var autoToken = String(parts[1]).trim().toLowerCase();
+  var autoEnabled = autoToken === '1' || autoToken === 'true' || autoToken === 'on';
+  var index = clampTempoIndex(parts[2]);
+  return {
+    autoEnabled: autoEnabled,
+    tempoIndex: index,
+  };
 }
 
 function broadcastToRoomClients(room, message) {
@@ -490,6 +569,10 @@ class Room {
     this.lastSnakeAtEaten = buildDefaultSnakeMessage();
     this.awaitingPostEatSnap = false;
     this.lastTacetMessage = buildTacetMessage(this.lastEatenMessage, null);
+    this.tempoAutoEnabled = true;
+    this.tempoControlIndex = getDefaultTempoIndex();
+    this.lastSnakeTempoControlIndex = getDefaultTempoIndex();
+    this.lastSnakeTempoBpm = getDefaultBpm();
 
     roomCounter++;
   }
@@ -623,6 +706,7 @@ wss.on('connection', (ws, req) => {
       }
 
       sendTempoTableToClient(ws);
+      sendRoomTempoControlToClient(ws, joinRoom);
       sendRoomStateToClient(ws, joinRoom, Date.now());
       sendRoomClockToClient(ws, joinRoom, Date.now());
 
@@ -650,6 +734,7 @@ wss.on('connection', (ws, req) => {
       }
       var syncRoom = getRoomOfClient(ws);
       if (syncRoom) {
+        sendRoomTempoControlToClient(ws, syncRoom);
         sendRoomStateToClient(ws, syncRoom, Date.now());
         sendRoomClockToClient(ws, syncRoom, Date.now());
       }
@@ -670,7 +755,33 @@ wss.on('connection', (ws, req) => {
 
     if (scoreClients.includes(ws)) {
       var roomFromScore = getRoomOfClient(ws);
-      if (!roomFromScore || !roomFromScore.snakeWS || roomFromScore.snakeWS.readyState !== 1) {
+      if (!roomFromScore) {
+        return;
+      }
+
+      if (message.startsWith('ROOM_TEMPO_CONTROL ')) {
+        var tempoControl = parseClientTempoControlMessage(message);
+        if (!tempoControl) {
+          return;
+        }
+        roomFromScore.tempoAutoEnabled = tempoControl.autoEnabled;
+        roomFromScore.tempoControlIndex = tempoControl.tempoIndex;
+        if (roomFromScore.tempoAutoEnabled) {
+          if (Number.isFinite(Number(roomFromScore.lastSnakeTempoBpm))) {
+            roomFromScore.transport.pendingTempoBpm = clampTransportBpm(roomFromScore.lastSnakeTempoBpm);
+          } else {
+            roomFromScore.transport.pendingTempoBpm = Number.NaN;
+          }
+        } else {
+          roomFromScore.transport.pendingTempoBpm = tempoIndexToBpm(roomFromScore.tempoControlIndex);
+        }
+        markStateChanged(roomFromScore);
+        broadcastRoomTempoControl(roomFromScore);
+        broadcastRoomState(roomFromScore, Date.now());
+        return;
+      }
+
+      if (!roomFromScore.snakeWS || roomFromScore.snakeWS.readyState !== 1) {
         return;
       }
       roomFromScore.snakeWS.send(message);
@@ -697,13 +808,24 @@ wss.on('connection', (ws, req) => {
       console.log('ROOM ' + roomFromSnake.ID + ' received tempo message: ' + message);
       var tempoParts = message.trim().split(/\s+/);
       if (tempoParts.length > 1) {
+        var tempoIndex = tempoControlToIndex(tempoParts[1]);
         var bpm = tempoControlToBpm(tempoParts[1]);
-        if (Number.isFinite(bpm)) {
-          roomFromSnake.transport.pendingTempoBpm = bpm;
-          markStateChanged(roomFromSnake);
-          broadcastRoomState(roomFromSnake, now);
-          if (roomFromSnake.snakePaused) {
-            console.log('ROOM ' + roomFromSnake.ID + ' tempo message while paused: queued for boundary -> ' + bpm.toFixed(3));
+        if (Number.isFinite(tempoIndex) && Number.isFinite(bpm)) {
+          roomFromSnake.lastSnakeTempoControlIndex = tempoIndex;
+          roomFromSnake.lastSnakeTempoBpm = bpm;
+          if (roomFromSnake.tempoAutoEnabled) {
+            roomFromSnake.transport.pendingTempoBpm = bpm;
+            markStateChanged(roomFromSnake);
+            broadcastRoomState(roomFromSnake, now);
+            if (roomFromSnake.snakePaused) {
+              console.log('ROOM ' + roomFromSnake.ID + ' tempo message while paused: queued for boundary -> ' + bpm.toFixed(3));
+            }
+          } else {
+            console.log(
+              'ROOM ' + roomFromSnake.ID +
+              ' tempo message ignored for apply (manual mode). stored bin=' + (tempoIndex + 1) +
+              ' bpm=' + bpm.toFixed(3)
+            );
           }
         }
       }
