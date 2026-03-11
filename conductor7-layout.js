@@ -2006,9 +2006,23 @@ function osmdSetBaseOffsetForConductorFirstStaff(svgEl, layout) {
     return;
   }
 
+  var contentBottomY = bottomY;
+  try {
+    var bbox = svgEl.getBBox();
+    if (bbox && Number.isFinite(Number(bbox.y)) && Number.isFinite(Number(bbox.height))) {
+      var bboxBottom = Number(bbox.y) + Number(bbox.height);
+      if (Number.isFinite(bboxBottom) && bboxBottom > contentBottomY) {
+        // Protect against bottom clipping when notes extend below detected staff lines.
+        contentBottomY = bboxBottom;
+      }
+    }
+  } catch (_bboxError) {
+    // Ignore getBBox failures and keep staff-line fallback.
+  }
+
   var fixedScale = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
   var topPx = (topY - vbRaw[1]) * fixedScale;
-  var bottomPx = (bottomY - vbRaw[1]) * fixedScale;
+  var bottomPx = (contentBottomY - vbRaw[1]) * fixedScale;
   if (!Number.isFinite(topPx) || !Number.isFinite(bottomPx) || bottomPx <= topPx) {
     svgEl.__baseOffsetY = 0;
     return;

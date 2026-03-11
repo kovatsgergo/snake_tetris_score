@@ -1597,6 +1597,24 @@ function osmdSetBaseOffsetForLowEb(svgEl, layout) {
   var staffSpace = (bottomY - topY) / 4;
   // Clarinet low E-flat sits below multiple ledger lines; keep extra headroom.
   var lowEbY = bottomY + staffSpace * 8.5;
+  var contentBottomY = lowEbY;
+  var contentTopY = topY;
+  try {
+    var bbox = svgEl.getBBox();
+    if (bbox && Number.isFinite(Number(bbox.y)) && Number.isFinite(Number(bbox.height))) {
+      var bboxBottom = Number(bbox.y) + Number(bbox.height);
+      var bboxTop = Number(bbox.y);
+      if (Number.isFinite(bboxBottom) && bboxBottom > contentBottomY) {
+        // Keep bottom-safe even for deeper notes than the historical low-Eb heuristic.
+        contentBottomY = bboxBottom;
+      }
+      if (Number.isFinite(bboxTop) && bboxTop < contentTopY) {
+        contentTopY = bboxTop;
+      }
+    }
+  } catch (_bboxError) {
+    // Ignore getBBox failures and keep heuristic fallback.
+  }
   var fixedScale = Number.isFinite(osmdMusicZoom) && osmdMusicZoom > 0 ? osmdMusicZoom : 1;
   if (typeof resolveOsmdMusicZoom === 'function') {
     var resolvedScale = Number(resolveOsmdMusicZoom());
@@ -1604,7 +1622,7 @@ function osmdSetBaseOffsetForLowEb(svgEl, layout) {
       fixedScale = resolvedScale;
     }
   }
-  var lowEbPx = (lowEbY - vbRaw[1]) * fixedScale;
+  var lowEbPx = (contentBottomY - vbRaw[1]) * fixedScale;
   var marginBottomPx = 2;
   var baseOffset = Math.max(0, full_Height - marginBottomPx - lowEbPx);
   svgEl.__baseOffsetY = baseOffset;
