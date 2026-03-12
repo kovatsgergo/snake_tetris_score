@@ -84,7 +84,7 @@
       <div style="margin: 8px 0;">
         <label for="debugFromQuarter">fromQuarter:</label>
         <label style="margin-left: 4px; display: inline-flex; align-items: center; gap: 4px;">
-          <input id="autoFromQuarterEnabled" type="checkbox" checked onchange="onAutoFromQuarterChange()" />
+          <input id="autoFromQuarterEnabled" type="checkbox" onchange="onAutoFromQuarterChange()" />
           Auto
         </label>
         <input
@@ -97,7 +97,7 @@
         />
         <label for="debugTransposeSemitones" style="margin-left: 12px;">transpose (st):</label>
         <label style="margin-left: 4px; display: inline-flex; align-items: center; gap: 4px;">
-          <input id="autoTransposeEnabled" type="checkbox" checked onchange="onAutoTransposeChange()" />
+          <input id="autoTransposeEnabled" type="checkbox" onchange="onAutoTransposeChange()" />
           Auto
         </label>
         <select id="debugTransposeSemitones" onchange="onManualTransposeChange()" style="margin-left: 4px;">
@@ -116,7 +116,7 @@
         </select>
         <label for="debugNumQuarters" style="margin-left: 12px;">numQuarters:</label>
         <label style="margin-left: 4px; display: inline-flex; align-items: center; gap: 4px;">
-          <input id="autoNumQuartersEnabled" type="checkbox" checked onchange="onAutoNumQuartersChange()" />
+          <input id="autoNumQuartersEnabled" type="checkbox" onchange="onAutoNumQuartersChange()" />
           Auto
         </label>
         <input
@@ -162,7 +162,7 @@
       <div id="tempoControlWrap" style="margin: 8px 0; display: flex; align-items: center; gap: 10px;">
         <strong>Tempo:</strong>
         <label style="display: inline-flex; align-items: center; gap: 4px;">
-          <input id="autoTempoEnabled" type="checkbox" checked onchange="onAutoTempoChange()" />
+          <input id="autoTempoEnabled" type="checkbox" onchange="onAutoTempoChange()" />
           Auto
         </label>
         <select id="debugTempoDropdown" onchange="onManualTempoChange()"></select>
@@ -252,6 +252,46 @@
     }
     var intIndex = Math.floor(numeric);
     return Math.max(0, Math.min(maxIndex, intIndex));
+  }
+
+  function setStartupCheckboxValue(id, checked) {
+    var input = document.getElementById(id);
+    if (input) {
+      input.checked = !!checked;
+    }
+  }
+
+  function setStartupInputValue(id, value) {
+    var input = document.getElementById(id);
+    if (!input || !Number.isFinite(Number(value))) {
+      return;
+    }
+    input.value = String(Math.floor(Number(value)));
+  }
+
+  function setStartupSelectValue(id, value) {
+    var select = document.getElementById(id);
+    if (!select) {
+      return;
+    }
+    var targetValue = String(Math.floor(Number(value)));
+    for (var i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === targetValue) {
+        select.value = targetValue;
+        return;
+      }
+    }
+  }
+
+  function applyStartupControlsToUi() {
+    setStartupCheckboxValue('autoFromQuarterEnabled', autoFromQuarterEnabled);
+    setStartupInputValue('debugFromQuarter', debugOverrideFromQuarter);
+    setStartupCheckboxValue('autoTransposeEnabled', autoTransposeEnabled);
+    setStartupSelectValue('debugTransposeSemitones', transposeSemitones);
+    setStartupCheckboxValue('autoNumQuartersEnabled', autoNumQuartersEnabled);
+    setStartupInputValue('debugNumQuarters', debugOverrideNumQuarters);
+    populateTempoDropdown(tempoLevelsBpm);
+    applyTempoControlToUi(autoTempoEnabled, startupTempoControlIndex);
   }
 
   function populateTempoDropdown(levels) {
@@ -421,8 +461,7 @@
     //console.log('after IDS ' + el.value);
   }
 
-  populateTempoDropdown((typeof TEMPO_TABLE_BPM !== 'undefined') ? TEMPO_TABLE_BPM : []);
-  applyTempoControlToUi(true, 0);
+  applyStartupControlsToUi();
 
   ws.onopen = function (event) {
     hasRoomClockAuthority = false;

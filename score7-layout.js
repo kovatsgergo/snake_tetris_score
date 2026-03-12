@@ -439,6 +439,23 @@ function phraseDescriptorEqualsSnapshot(descriptor, snapshot) {
   );
 }
 
+function snapshotMatchesStaff(snapshot, staffIndex) {
+  if (!snapshot) {
+    return false;
+  }
+  var snapshotStaff = Number(snapshot.staffIndex);
+  var targetStaff = Number(staffIndex);
+  if (!Number.isFinite(snapshotStaff) || !Number.isFinite(targetStaff)) {
+    return false;
+  }
+  return Math.floor(snapshotStaff) === Math.floor(targetStaff);
+}
+
+function phraseDescriptorEqualsSnapshotForStaff(descriptor, snapshot, staffIndex) {
+  return snapshotMatchesStaff(snapshot, staffIndex) &&
+    phraseDescriptorEqualsSnapshot(descriptor, snapshot);
+}
+
 function phraseDescriptorsEqual(a, b) {
   if (!a || !b) {
     return false;
@@ -455,18 +472,19 @@ async function syncAuthoritativeCandidatePreview(currentDescriptor) {
   if (phraseSwapInProgress) {
     return false;
   }
+  var staffIndex = selectedStaff();
   var candidateDescriptor = readRoomStateCandidatePhrase();
   if (!candidateDescriptor || phraseDescriptorsEqual(currentDescriptor, candidateDescriptor)) {
     removePhrasePreviewOverlay(false);
     return false;
   }
-  if (phraseDescriptorEqualsSnapshot(candidateDescriptor, phrasePreviewSnapshot)) {
+  if (phraseDescriptorEqualsSnapshotForStaff(candidateDescriptor, phrasePreviewSnapshot, staffIndex)) {
     return true;
   }
   var candidateSnapshot = buildPhraseSnapshot(
     candidateDescriptor.fromQuarter,
     candidateDescriptor.numQuarters,
-    selectedStaff(),
+    staffIndex,
     candidateDescriptor.transposeSemitones,
     candidateDescriptor.phraseSequence
   );
@@ -2356,7 +2374,11 @@ function drawAndAnimatePlaybarTimeMapped(
     if (!currentDescriptor) {
       return false;
     }
-    var alreadyCurrent = phraseDescriptorEqualsSnapshot(currentDescriptor, currentPhraseSnapshot);
+    var alreadyCurrent = phraseDescriptorEqualsSnapshotForStaff(
+      currentDescriptor,
+      currentPhraseSnapshot,
+      selectedStaff()
+    );
     if (alreadyCurrent && playbarAnimationFrame) {
       return false;
     }
@@ -3130,7 +3152,11 @@ async function renderMusicFromSnakeCore() {
     return false;
   }
 
-  var alreadyCurrent = phraseDescriptorEqualsSnapshot(currentDescriptor, currentPhraseSnapshot);
+  var alreadyCurrent = phraseDescriptorEqualsSnapshotForStaff(
+    currentDescriptor,
+    currentPhraseSnapshot,
+    staffIndex
+  );
   if (alreadyCurrent && playbarAnimationFrame) {
     await syncAuthoritativeCandidatePreview(currentDescriptor);
     return true;

@@ -5,7 +5,7 @@ var SCORE_FILE = '/dongiovanni.mxl';
 var SCORE_LOOP_MODE = 'wrap';
 
 // BPM levels mapped to the in-game tempo control (index 0 = slowest).
-var TEMPO_TABLE_BPM = [40, 50, 63, 78];
+var TEMPO_TABLE_BPM = [40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90];
 
 // Minimum transposition in semitones.
 // The active range is [TRANSPOSE_MIN, TRANSPOSE_MIN + hueBins] where hueBins
@@ -14,7 +14,24 @@ var TEMPO_TABLE_BPM = [40, 50, 63, 78];
 //          TRANSPOSE_MIN =  0 → range [ 0, +12] with 12 bins
 var TRANSPOSE_MIN = -2;
 
+// Shared startup defaults for v7 score/conductor clients and room tempo state.
+// tempoControlIndex is a 0-based index into TEMPO_TABLE_BPM.
+var SCORE_STARTUP_DEFAULTS = {
+  fromQuarter: 0,
+  autoFromQuarterEnabled: true,
+  transposeSemitones: 0,
+  autoTransposeEnabled: false,
+  numQuarters: 6,
+  autoNumQuartersEnabled: true,
+  tempoControlIndex: 4, // TEMPO_TABLE_BPM[4] = 60 with the current table.
+  autoTempoEnabled: false,
+};
+
 // Export for Node.js (server2.js); ignored by browsers.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { TEMPO_TABLE_BPM: TEMPO_TABLE_BPM, TRANSPOSE_MIN: TRANSPOSE_MIN };
+  module.exports = {
+    TEMPO_TABLE_BPM: TEMPO_TABLE_BPM,
+    TRANSPOSE_MIN: TRANSPOSE_MIN,
+    SCORE_STARTUP_DEFAULTS: SCORE_STARTUP_DEFAULTS,
+  };
 }

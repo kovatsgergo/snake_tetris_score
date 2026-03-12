@@ -33,6 +33,11 @@ const TRANSPORT_TICK_MS = 25;
 
 const TEMPO_TABLE_BPM = appConfig.TEMPO_TABLE_BPM;
 const TRANSPOSE_MIN = (typeof appConfig.TRANSPOSE_MIN === 'number') ? appConfig.TRANSPOSE_MIN : -6;
+const SCORE_STARTUP_DEFAULTS = (
+  appConfig &&
+  appConfig.SCORE_STARTUP_DEFAULTS &&
+  typeof appConfig.SCORE_STARTUP_DEFAULTS === 'object'
+) ? appConfig.SCORE_STARTUP_DEFAULTS : {};
 
 var scoreClients = [];
 var roomCounter = 0;
@@ -61,22 +66,106 @@ function sanitizeTempoTable(rawTable) {
 
 const RESOLVED_TEMPO_TABLE_BPM = sanitizeTempoTable(TEMPO_TABLE_BPM);
 
+function parseStartupBoolean(value, fallback) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    var normalized = value.trim().toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes') {
+      return true;
+    }
+    if (normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no') {
+      return false;
+    }
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  return fallback;
+}
+
+function parseStartupNonNegativeInt(value, fallback) {
+  var numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.max(0, Math.floor(numeric));
+}
+
+function parseStartupPositiveInt(value, fallback) {
+  var numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.max(1, Math.floor(numeric));
+}
+
+function clampStartupTransposeSemitones(value) {
+  var numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    numeric = 0;
+  }
+  var intValue = numeric < 0 ? Math.ceil(numeric) : Math.floor(numeric);
+  return Math.max(TRANSPOSE_MIN, Math.min(TRANSPOSE_MIN + 24, intValue));
+}
+
+function getDefaultFromQuarter() {
+  return parseStartupNonNegativeInt(SCORE_STARTUP_DEFAULTS.fromQuarter, 0);
+}
+
+function getDefaultNumQuarters() {
+  return parseStartupPositiveInt(SCORE_STARTUP_DEFAULTS.numQuarters, 4);
+}
+
+function getDefaultTranspose() {
+  return clampStartupTransposeSemitones(SCORE_STARTUP_DEFAULTS.transposeSemitones);
+}
+
+function fallbackTempoIndex() {
+  if (RESOLVED_TEMPO_TABLE_BPM.length === 0) {
+    return 0;
+  }
+  var exactIndex = RESOLVED_TEMPO_TABLE_BPM.indexOf(TRANSPORT_DEFAULT_BPM);
+  if (exactIndex !== -1) {
+    return exactIndex;
+  }
+  var bestIndex = 0;
+  var bestDistance = Number.POSITIVE_INFINITY;
+  for (var i = 0; i < RESOLVED_TEMPO_TABLE_BPM.length; i++) {
+    var distance = Math.abs(RESOLVED_TEMPO_TABLE_BPM[i] - TRANSPORT_DEFAULT_BPM);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
+function getConfiguredStartupTempoIndex() {
+  if (RESOLVED_TEMPO_TABLE_BPM.length === 0) {
+    return 0;
+  }
+  var numeric = Number(SCORE_STARTUP_DEFAULTS.tempoControlIndex);
+  if (!Number.isFinite(numeric)) {
+    return fallbackTempoIndex();
+  }
+  return Math.max(0, Math.min(RESOLVED_TEMPO_TABLE_BPM.length - 1, Math.floor(numeric)));
+}
+
 function getDefaultBpm() {
-  var table = RESOLVED_TEMPO_TABLE_BPM;
-  if (table.length >= 2) {
-    return table[1];
+  if (RESOLVED_TEMPO_TABLE_BPM.length === 0) {
+    return TRANSPORT_DEFAULT_BPM;
   }
-  if (table.length === 1) {
-    return table[0];
-  }
-  return TRANSPORT_DEFAULT_BPM;
+  return clampTransportBpm(RESOLVED_TEMPO_TABLE_BPM[getConfiguredStartupTempoIndex()]);
 }
 
 function getDefaultTempoIndex() {
-  if (RESOLVED_TEMPO_TABLE_BPM.length >= 2) {
-    return 1;
-  }
-  return 0;
+  return getConfiguredStartupTempoIndex();
+}
+
+function getDefaultTempoAutoEnabled() {
+  return parseStartupBoolean(SCORE_STARTUP_DEFAULTS.autoTempoEnabled, false);
 }
 
 function clampTempoIndex(index) {
@@ -131,7 +220,7 @@ function buildDefaultSnakeMessage() {
 }
 
 function buildDefaultEatenMessage() {
-  var hueBin = -TRANSPOSE_MIN;
+  var hueBin = getDefaultTranspose() - TRANSPOSE_MIN;
   return 'eaten 0 0 4 ' + hueBin + ' 3 1';
 }
 
@@ -537,9 +626,9 @@ function advanceRoomClock(room, nowMs) {
 class Room {
   constructor(ws, snakeIP) {
     var now = Date.now();
-    var defaultPhrase = parseSnakePhrase(buildDefaultSnakeMessage()) || {
-      fromQuarter: 0,
-      numQuarters: 4,
+    var defaultPhrase = {
+      fromQuarter: getDefaultFromQuarter(),
+      numQuarters: getDefaultNumQuarters(),
     };
 
     this.snakeWS = ws;
@@ -562,7 +651,7 @@ class Room {
 
     this.currentFromQuarter = defaultPhrase.fromQuarter;
     this.currentNumQuarters = Math.max(1, defaultPhrase.numQuarters);
-    this.currentTranspose = 0;
+    this.currentTranspose = getDefaultTranspose();
     this.currentPhraseSeq = 0;
 
     this.hasCandidate = false;
@@ -585,7 +674,7 @@ class Room {
     this.lastSnakeAtEaten = buildDefaultSnakeMessage();
     this.awaitingPostEatSnap = false;
     this.lastTacetMessage = buildTacetMessage(this.lastEatenMessage, null);
-    this.tempoAutoEnabled = true;
+    this.tempoAutoEnabled = getDefaultTempoAutoEnabled();
     this.tempoControlIndex = getDefaultTempoIndex();
     this.lastSnakeTempoControlIndex = getDefaultTempoIndex();
     this.lastSnakeTempoBpm = getDefaultBpm();

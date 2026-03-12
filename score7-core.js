@@ -110,14 +110,125 @@ var notemap = [0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9, 1];
 var rhythm = [1, 102, 203, 304, 405, 106, 207, 308, 409];
 var rhythmNotes = [];
 
+function readStartupDefaultsConfig() {
+  if (
+    typeof SCORE_STARTUP_DEFAULTS !== 'undefined' &&
+    SCORE_STARTUP_DEFAULTS &&
+    typeof SCORE_STARTUP_DEFAULTS === 'object'
+  ) {
+    return SCORE_STARTUP_DEFAULTS;
+  }
+  return {};
+}
+
+function parseStartupBoolean(value, fallback) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    var normalized = value.trim().toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes') {
+      return true;
+    }
+    if (normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no') {
+      return false;
+    }
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  return fallback;
+}
+
+function parseStartupNonNegativeInt(value, fallback) {
+  var parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(0, Math.floor(parsed));
+}
+
+function parseStartupPositiveInt(value, fallback) {
+  var parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.floor(parsed));
+}
+
+function clampStartupTransposeSemitones(value) {
+  var parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    parsed = 0;
+  }
+  var intValue = parsed < 0 ? Math.ceil(parsed) : Math.floor(parsed);
+  var tMin = (typeof TRANSPOSE_MIN !== 'undefined') ? TRANSPOSE_MIN : -6;
+  return Math.max(tMin, Math.min(tMin + 24, intValue));
+}
+
+function sanitizeStartupTempoLevels() {
+  var rawLevels = Array.isArray(TEMPO_TABLE_BPM) ? TEMPO_TABLE_BPM : [];
+  var clean = rawLevels.map(function (value) {
+    return Number(value);
+  }).filter(function (value) {
+    return Number.isFinite(value);
+  }).map(function (value) {
+    return Math.max(20, Math.min(280, value));
+  });
+  return clean.length ? clean : [60];
+}
+
+function fallbackStartupTempoControlIndex(levels) {
+  if (!Array.isArray(levels) || !levels.length) {
+    return 0;
+  }
+  var exactIndex = levels.indexOf(60);
+  if (exactIndex !== -1) {
+    return exactIndex;
+  }
+  var bestIndex = 0;
+  var bestDistance = Number.POSITIVE_INFINITY;
+  for (var i = 0; i < levels.length; i++) {
+    var distance = Math.abs(levels[i] - 60);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
+function resolveStartupTempoControlIndex(levels, startupDefaults) {
+  if (!Array.isArray(levels) || !levels.length) {
+    return 0;
+  }
+  var parsed = Number(startupDefaults && startupDefaults.tempoControlIndex);
+  if (!Number.isFinite(parsed)) {
+    return fallbackStartupTempoControlIndex(levels);
+  }
+  return Math.max(0, Math.min(levels.length - 1, Math.floor(parsed)));
+}
+
+function resolveStartupTempoBpm(levels, tempoControlIndex) {
+  if (!Array.isArray(levels) || !levels.length) {
+    return 60;
+  }
+  var safeIndex = Math.max(0, Math.min(levels.length - 1, Math.floor(Number(tempoControlIndex) || 0)));
+  return levels[safeIndex];
+}
+
+var startupDefaultsConfig = readStartupDefaultsConfig();
+var startupTempoLevelsBpm = sanitizeStartupTempoLevels();
+var startupTempoControlIndex = resolveStartupTempoControlIndex(startupTempoLevelsBpm, startupDefaultsConfig);
+
 var playbarTimeout;
 var playbarAnimationFrame = 0;
 var playbarLastStepMs = 0;
 // Playhead is disabled until explicitly re-enabled.
 var playheadEnabled = false;
 // Stored in BPM for stable shared beat logic.
-var tempo = 60;
-var autoTempoEnabled = true;
+var tempo = resolveStartupTempoBpm(startupTempoLevelsBpm, startupTempoControlIndex);
+var autoTempoEnabled = parseStartupBoolean(startupDefaultsConfig.autoTempoEnabled, false);
 var metronomeQuarterUntilMs = 0;
 var metronomeEighthUntilMs = 0;
 var metronomeLastEighthIndex = null;
@@ -132,14 +243,14 @@ var transportStartedAtMs = Number.NaN;
 var roomClockQuarterCounter = Number.NaN;
 var roomClockBeatInPhrase = 1;
 var roomClockBeatsPerPhrase = 1;
-var roomClockBpm = 60;
+var roomClockBpm = tempo;
 var roomClockServerMs = Number.NaN;
 var pendingRoomBoundaryCount = 0;
 var roomStateVersion = 0;
 var roomStateSnapshot = null;
 var appliedRoomDynamicsVersion = 0;
 var queuedDynamics = null;
-var tempoLevelsBpm = [50, 65, 80, 95];
+var tempoLevelsBpm = startupTempoLevelsBpm.slice();
 var METRONOME_FLASH_MS = 90;
 var phrasePreviewSnapshot = null;
 var phrasePreviewSvg = null;
@@ -1717,12 +1828,12 @@ var snakeSnapshotVersion = 0;
 var renderWaitSnakeVersion = 0;
 var eatenRenderFallbackTimer = 0;
 var EATEN_RENDER_FALLBACK_MS = 250;
-var debugOverrideFromQuarter = null;
-var debugOverrideNumQuarters = null;
-var transposeSemitones = 0;
-var autoFromQuarterEnabled = true;
-var autoNumQuartersEnabled = true;
-var autoTransposeEnabled = true;
+var debugOverrideFromQuarter = parseStartupNonNegativeInt(startupDefaultsConfig.fromQuarter, 0);
+var debugOverrideNumQuarters = parseStartupPositiveInt(startupDefaultsConfig.numQuarters, 4);
+var transposeSemitones = clampStartupTransposeSemitones(startupDefaultsConfig.transposeSemitones);
+var autoFromQuarterEnabled = parseStartupBoolean(startupDefaultsConfig.autoFromQuarterEnabled, true);
+var autoNumQuartersEnabled = parseStartupBoolean(startupDefaultsConfig.autoNumQuartersEnabled, true);
+var autoTransposeEnabled = parseStartupBoolean(startupDefaultsConfig.autoTransposeEnabled, false);
 var lockedFromQuarter = null;
 var lockedNumQuarters = null;
 var lastRenderDiagnostics = null;

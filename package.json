@@ -24,7 +24,8 @@
     "test:index7:realtime": "node scripts/test-index7-realtime-regressions.mjs",
     "test:conductor7:keysig": "node test-conductor7-keysig-regressions.mjs",
     "package:windows:stage": "node tools/packaging/windows/prepare-stage.mjs",
-    "package:windows:exe": "tools\\packaging\\windows\\build-single-exe.cmd"
+    "package:windows:exe": "tools\\packaging\\windows\\build-single-exe.cmd",
+    "package:windows:exe:mac": "node tools/packaging/windows/prepare-stage.mjs && makensis tools/packaging/windows/snake-tetris-score.nsi"
   },
   "keywords": [],
   "author": "kage",
