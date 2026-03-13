@@ -457,6 +457,7 @@ async function syncAuthoritativeCandidatePreview(currentDescriptor) {
 }
 
 var candidatePreviewSyncScheduled = false;
+var conductorFitReferenceRetryScheduled = false;
 
 function scheduleAuthoritativeCandidatePreview() {
   if (candidatePreviewSyncScheduled) {
@@ -473,6 +474,58 @@ function scheduleAuthoritativeCandidatePreview() {
     return false;
   });
   return osmdRenderQueue;
+}
+
+function hasConductorFitReferenceReady() {
+  if (typeof window === 'undefined' || typeof window.getConductorFitReferenceUnits !== 'function') {
+    return false;
+  }
+  var ref = window.getConductorFitReferenceUnits();
+  return !!(ref && ref.ready);
+}
+
+function scheduleConductorFitReferenceRetry() {
+  if (conductorFitReferenceRetryScheduled) {
+    return;
+  }
+  conductorFitReferenceRetryScheduled = true;
+  setTimeout(function () {
+    conductorFitReferenceRetryScheduled = false;
+    if (typeof renderMusicFromSnake === 'function' && tannhauserScore) {
+      renderMusicFromSnake();
+    }
+  }, 120);
+}
+
+async function ensureConductorFitReferenceReadyForRender() {
+  if (hasConductorFitReferenceReady()) {
+    return true;
+  }
+  if (typeof ensureConductorFitReferenceMeasured === 'function') {
+    await ensureConductorFitReferenceMeasured();
+    if (hasConductorFitReferenceReady()) {
+      return true;
+    }
+  }
+  if (
+    typeof document !== 'undefined' &&
+    document.fonts &&
+    document.fonts.ready &&
+    typeof document.fonts.ready.then === 'function'
+  ) {
+    try {
+      await document.fonts.ready;
+    } catch (_fontsError) {
+      // Ignore font API failures and retry measurement once more.
+    }
+    if (typeof ensureConductorFitReferenceMeasured === 'function') {
+      await ensureConductorFitReferenceMeasured();
+      if (hasConductorFitReferenceReady()) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 async function loadTannhauserMxl() {
@@ -548,7 +601,11 @@ async function loadTannhauserMxl() {
       wsSend('STAFFCOUNT ' + tannhauserScore.getStaffCount());
     }
 
-    await ensureConductorFitReferenceMeasured();
+    var fitReady = await ensureConductorFitReferenceReadyForRender();
+    if (!fitReady) {
+      scheduleConductorFitReferenceRetry();
+      return;
+    }
     await renderMusicFromSnake();
   } catch (error) {
     setDebugStatus('MXL load/parse error: ' + error.message);
@@ -5036,6 +5093,13 @@ async function renderMusicFromSnakeCore() {
   }
   if (phraseSwapInProgress) {
     return false;
+  }
+  if (!hasConductorFitReferenceReady()) {
+    var fitReady = await ensureConductorFitReferenceReadyForRender();
+    if (!fitReady) {
+      scheduleConductorFitReferenceRetry();
+      return false;
+    }
   }
   if (typeof ensureScoreLayeringContainer === 'function') {
     ensureScoreLayeringContainer();

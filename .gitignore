@@ -152,6 +152,7 @@ other_versions/
 old_scores/
 
 tools/
+output/
 #tools/packaging/windows/stage/
 #tools/packaging/windows/dist/
 #tools/packaging/windows/runtime/node/node.exe
