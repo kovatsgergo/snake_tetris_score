@@ -529,8 +529,8 @@ async function loadTannhauserMxl() {
       wsSend('STAFFCOUNT ' + tannhauserScore.getStaffCount());
     }
 
-    ensureConductorFitReferenceMeasured();
-    renderMusicFromSnake();
+    await ensureConductorFitReferenceMeasured();
+    await renderMusicFromSnake();
   } catch (error) {
     setDebugStatus('MXL load/parse error: ' + error.message);
   }
