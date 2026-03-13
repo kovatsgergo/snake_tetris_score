@@ -5104,6 +5104,17 @@ function handleRoomStateUpdate() {
     applyRoomStateDynamics(false);
   }
   var currentDescriptor = readRoomStateCurrentPhrase();
+  if (phraseSwapInProgress) {
+    deferredRoomStateUpdatePending = true;
+    if (typeof traceConductorEvent === 'function') {
+      traceConductorEvent('room.state-deferred-during-swap', {
+        hasCurrentSnapshot: !!currentPhraseSnapshot,
+        hasCurrentDescriptor: !!currentDescriptor,
+        currentDescriptor: currentDescriptor,
+      });
+    }
+    return;
+  }
   if (typeof traceConductorEvent === 'function') {
     traceConductorEvent('room.state-handle-update', {
       hasPlaybarFrame: !!playbarAnimationFrame,

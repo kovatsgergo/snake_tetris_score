@@ -294,6 +294,7 @@ var phraseSwapInProgress = false;
 var phraseSwapTargetSnapshot = null;
 var phraseDeferredSwapTimer = 0;
 var currentPhraseSnapshot = null;
+var deferredRoomStateUpdatePending = false;
 var TRANSPOSE_TRACE_STORAGE_KEY = 'conductor7TransposeTraceEnabled';
 var transposeTraceEnabled = true;
 var transposeTraceBufferLimit = 600;
@@ -1605,21 +1606,37 @@ function startPhraseSwapAnimation(nowMs) {
     }
 
     phraseSwapAnimationFrame = 0;
-    phraseSwapInProgress = false;
     applyScoreSvgTranslate(baseSvg, 0);
 
     var targetSnapshot = phraseSwapTargetSnapshot;
     phraseSwapTargetSnapshot = null;
     removePhrasePreviewOverlay(false);
-    if (targetSnapshot) {
-      traceConductorEvent('swap.complete', {
-        nowMs: Number(now),
-        targetFrom: Number(targetSnapshot.fromQuarter),
-        targetNum: Number(targetSnapshot.numQuarters),
-        targetTranspose: Number(targetSnapshot.transposeSemitones),
-      });
-      commitPhraseSwapTargetSnapshot(targetSnapshot, now);
+    if (!targetSnapshot) {
+      phraseSwapInProgress = false;
+      if (deferredRoomStateUpdatePending && typeof window !== 'undefined' && typeof window.handleRoomStateUpdate === 'function') {
+        deferredRoomStateUpdatePending = false;
+        window.handleRoomStateUpdate();
+      }
+      return;
     }
+    traceConductorEvent('swap.complete', {
+      nowMs: Number(now),
+      targetFrom: Number(targetSnapshot.fromQuarter),
+      targetNum: Number(targetSnapshot.numQuarters),
+      targetTranspose: Number(targetSnapshot.transposeSemitones),
+    });
+    Promise.resolve(commitPhraseSwapTargetSnapshot(targetSnapshot, now))
+      .catch(function (error) {
+        var message = 'Phrase swap commit error: ' + (error && error.message ? error.message : error);
+        setDebugStatus(message);
+      })
+      .finally(function () {
+        phraseSwapInProgress = false;
+        if (deferredRoomStateUpdatePending && typeof window !== 'undefined' && typeof window.handleRoomStateUpdate === 'function') {
+          deferredRoomStateUpdatePending = false;
+          window.handleRoomStateUpdate();
+        }
+      });
   }
 
   phraseSwapAnimationFrame = requestAnimationFrame(step);
