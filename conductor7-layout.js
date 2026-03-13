@@ -456,6 +456,25 @@ async function syncAuthoritativeCandidatePreview(currentDescriptor) {
   return showPhrasePreview(candidateSnapshot);
 }
 
+var candidatePreviewSyncScheduled = false;
+
+function scheduleAuthoritativeCandidatePreview() {
+  if (candidatePreviewSyncScheduled) {
+    return osmdRenderQueue;
+  }
+  candidatePreviewSyncScheduled = true;
+  osmdRenderQueue = osmdRenderQueue.then(function () {
+    candidatePreviewSyncScheduled = false;
+    return syncAuthoritativeCandidatePreview(readRoomStateCurrentPhrase());
+  }).catch(function (error) {
+    candidatePreviewSyncScheduled = false;
+    var message = 'OSMD preview sync error: ' + (error && error.message ? error.message : error);
+    setDebugStatus(message);
+    return false;
+  });
+  return osmdRenderQueue;
+}
+
 async function loadTannhauserMxl() {
   try {
     setDebugStatus('Loading ' + SCORE_FILE + ' ...');
@@ -4873,6 +4892,9 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
   var savedOsmdInstance = osmdInstance;
   var savedOsmdContainerRef = osmdContainerRef;
   var savedOsmdLayout = Object.assign({}, osmdLayout);
+  var savedFullWidth = full_Width;
+  var savedFullHeight = full_Height;
+  var savedOsmdMusicZoom = osmdMusicZoom;
   var previewSvg = null;
 
   try {
@@ -4910,6 +4932,9 @@ async function renderPhraseSnapshotToSvg(snapshot, renderOptions) {
     osmdInstance = savedOsmdInstance;
     osmdContainerRef = savedOsmdContainerRef;
     osmdLayout = savedOsmdLayout;
+    full_Width = savedFullWidth;
+    full_Height = savedFullHeight;
+    osmdMusicZoom = savedOsmdMusicZoom;
     lastRenderDiagnostics = savedDiagnostics;
     setRenderInfo(savedRenderInfoText);
     if (tempContainer.parentNode) {
@@ -5089,7 +5114,7 @@ function handleRoomStateUpdate() {
   }
   if (playbarAnimationFrame && currentPhraseSnapshot && currentDescriptor) {
     // Keep commit strictly on boundary; only refresh candidate preview while running.
-    syncAuthoritativeCandidatePreview(currentDescriptor);
+    scheduleAuthoritativeCandidatePreview();
     return;
   }
   renderMusicFromSnake();
