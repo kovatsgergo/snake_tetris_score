@@ -823,6 +823,36 @@ function syncConductorLayoutAfterResize() {
 }
 window.syncConductorLayoutAfterResize = syncConductorLayoutAfterResize;
 
+function ensureConductorContainerFitsRenderedSvg(svg) {
+  var container = mainScoreElement || document.getElementById('score');
+  if (!container || !svg) {
+    return false;
+  }
+  var svgHeight = parseFloat(svg.style.height);
+  if ((!Number.isFinite(svgHeight) || svgHeight <= 0) && typeof svg.getBoundingClientRect === 'function') {
+    var svgRect = svg.getBoundingClientRect();
+    svgHeight = Number(svgRect && svgRect.height);
+  }
+  if (!Number.isFinite(svgHeight) || svgHeight <= 0) {
+    return false;
+  }
+  var containerHeight = parseFloat(container.style.height);
+  if ((!Number.isFinite(containerHeight) || containerHeight <= 0) && typeof container.getBoundingClientRect === 'function') {
+    var containerRect = container.getBoundingClientRect();
+    containerHeight = Number(containerRect && containerRect.height);
+  }
+  if (!Number.isFinite(containerHeight) || containerHeight <= 0) {
+    containerHeight = Number(full_Height) || 0;
+  }
+  var requiredHeight = Math.ceil(svgHeight);
+  if (requiredHeight <= containerHeight + 1) {
+    return false;
+  }
+  full_Height = requiredHeight;
+  container.style.height = requiredHeight + 'px';
+  return true;
+}
+
 function osmdDisableMultiRestGeneration(osmd) {
   if (!osmd || !osmd.EngravingRules) {
     return;
@@ -4783,6 +4813,7 @@ async function renderConductorMusicSlice(snapshot, options) {
   }
 
   applyTacetConductorOverlays(svg, staffBands);
+  ensureConductorContainerFitsRenderedSvg(svg);
   return true;
 }
 

@@ -474,8 +474,10 @@
     if (!clockSyncTimerID) {
       clockSyncTimerID = setInterval(requestClockSync, 4000);
     }
-    el = document.getElementById('net').innerHTML 
-    = 'websocket connection opened ';
+    el = document.getElementById('net');
+    if (el) {
+      el.innerHTML = 'websocket connection opened ';
+    }
   };
 
   ws.onclose = function (event) {
@@ -483,13 +485,17 @@
       clearInterval(clockSyncTimerID);
       clockSyncTimerID = 0;
     }
-    document.getElementById('net').innerHTML =
-     'websocket connection closed ' + event.data;
+    el = document.getElementById('net');
+    if (el) {
+      el.innerHTML = 'websocket connection closed ' + event.data;
+    }
   }
 
   ws.onerror = function (event) {
     el = document.getElementById('net');
-    el.innerHTML = 'websocket connection error ' + event.data;
+    if (el) {
+      el.innerHTML = 'websocket connection error ' + event.data;
+    }
   }
 
   ws.onmessage = function (event) {
