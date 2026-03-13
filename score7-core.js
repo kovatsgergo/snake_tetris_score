@@ -260,6 +260,7 @@ var phraseSwapInProgress = false;
 var phraseSwapTargetSnapshot = null;
 var phraseDeferredSwapTimer = 0;
 var currentPhraseSnapshot = null;
+var deferredRoomStateUpdatePending = false;
 var STEM_RULES_STORAGE_KEY = 'osmdStemRulesEnabled';
 var stemRulesEnabled = true;
 var stemRulesExtraStemLengthInSpaces = 0.0;
@@ -1158,6 +1159,84 @@ function applyScoreSvgTranslate(svgEl, dyPx) {
   svgEl.style.webkitTransform = translate;
 }
 
+function shouldForceScoreSwapCommitRepaint() {
+  if (typeof navigator === 'undefined') {
+    return false;
+  }
+  var userAgent = String(navigator.userAgent || '');
+  var platform = String(navigator.platform || '');
+  var maxTouchPoints = Math.max(0, Number(navigator.maxTouchPoints) || 0);
+  var isIOSWebKit = (
+    /iPad|iPhone|iPod/i.test(userAgent) ||
+    (platform === 'MacIntel' && maxTouchPoints > 1)
+  ) && /AppleWebKit/i.test(userAgent);
+  return isIOSWebKit;
+}
+
+function forceScoreSwapCommitRepaint() {
+  if (!shouldForceScoreSwapCommitRepaint()) {
+    return false;
+  }
+  var container = mainScoreElement || document.getElementById('score');
+  var svg = (typeof getActiveScoreSvg === 'function') ? getActiveScoreSvg() : null;
+  if (!container || !svg || svg.parentNode !== container) {
+    return false;
+  }
+  var nextSibling = svg.nextSibling;
+  var previousTransform = container.style.transform;
+  var previousWebkitTransform = container.style.webkitTransform;
+  container.style.transform = 'translateZ(0)';
+  container.style.webkitTransform = 'translateZ(0)';
+  container.removeChild(svg);
+  void container.offsetHeight;
+  if (nextSibling && nextSibling.parentNode === container) {
+    container.insertBefore(svg, nextSibling);
+  } else {
+    container.appendChild(svg);
+  }
+  if (typeof applyFixedScoreSvgStyle === 'function') {
+    applyFixedScoreSvgStyle(svg);
+  }
+  applyScoreSvgTranslate(svg, 0);
+  if (typeof ensurePreviewOnTop === 'function') {
+    ensurePreviewOnTop();
+  }
+  void svg.getBoundingClientRect();
+  container.style.transform = previousTransform;
+  container.style.webkitTransform = previousWebkitTransform;
+  return true;
+}
+
+function replayDeferredRoomStateUpdateAfterSwap() {
+  if (
+    !deferredRoomStateUpdatePending ||
+    typeof window === 'undefined' ||
+    typeof window.handleRoomStateUpdate !== 'function'
+  ) {
+    return;
+  }
+  deferredRoomStateUpdatePending = false;
+  window.handleRoomStateUpdate();
+}
+
+function commitPhraseSwapSnapshotAsync(snapshot, nowMs) {
+  if (!snapshot) {
+    phraseSwapInProgress = false;
+    replayDeferredRoomStateUpdateAfterSwap();
+    return Promise.resolve(false);
+  }
+  return Promise.resolve(commitPhraseSwapTargetSnapshot(snapshot, nowMs))
+    .catch(function (error) {
+      var message = 'Phrase swap commit error: ' + (error && error.message ? error.message : error);
+      setDebugStatus(message);
+      return false;
+    })
+    .finally(function () {
+      phraseSwapInProgress = false;
+      replayDeferredRoomStateUpdateAfterSwap();
+    });
+}
+
 function ensurePreviewOnTop() {
   if (!phrasePreviewSvg || !mainScoreElement) {
     return;
@@ -1265,15 +1344,12 @@ function startPhraseSwapAnimation(nowMs) {
     }
 
     phraseSwapAnimationFrame = 0;
-    phraseSwapInProgress = false;
     applyScoreSvgTranslate(baseSvg, 0);
 
     var targetSnapshot = phraseSwapTargetSnapshot;
     phraseSwapTargetSnapshot = null;
     removePhrasePreviewOverlay(false);
-    if (targetSnapshot) {
-      commitPhraseSwapTargetSnapshot(targetSnapshot, now);
-    }
+    void commitPhraseSwapSnapshotAsync(targetSnapshot, now);
   }
 
   phraseSwapAnimationFrame = requestAnimationFrame(step);
@@ -1310,8 +1386,9 @@ function forceCommitPendingPreviewSwap() {
     return false;
   }
   var snapshot = phrasePreviewSnapshot;
+  phraseSwapInProgress = true;
   removePhrasePreviewOverlay(false);
-  commitPhraseSwapTargetSnapshot(snapshot);
+  void commitPhraseSwapSnapshotAsync(snapshot);
   return true;
 }
 
@@ -1394,6 +1471,7 @@ function stopPlaybarMotion() {
   }
   phraseSwapInProgress = false;
   phraseSwapTargetSnapshot = null;
+  deferredRoomStateUpdatePending = false;
   deferredSnakeRenderPending = false;
   applyScoreSvgTranslate(getActiveScoreSvg(), 0);
   if (phrasePreviewSvg) {

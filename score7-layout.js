@@ -3103,6 +3103,9 @@ async function commitPhraseSwapTargetSnapshot(snapshot) {
   lockedFromQuarter = snapshot.fromQuarter;
   lockedNumQuarters = snapshot.numQuarters;
   refreshDebugSliceInputs(snapshot.fromQuarter, snapshot.numQuarters);
+  if (typeof forceScoreSwapCommitRepaint === 'function') {
+    forceScoreSwapCommitRepaint();
+  }
 }
 
 function redrawDynamicsOnly() {
@@ -3192,6 +3195,10 @@ function handleRoomStateUpdate() {
     applyRoomStateDynamics(false);
   }
   var currentDescriptor = readRoomStateCurrentPhrase();
+  if (phraseSwapInProgress) {
+    deferredRoomStateUpdatePending = true;
+    return;
+  }
   if (playbarAnimationFrame && currentPhraseSnapshot && currentDescriptor) {
     // Keep commit strictly on boundary; only refresh candidate preview while running.
     syncAuthoritativeCandidatePreview(currentDescriptor);
